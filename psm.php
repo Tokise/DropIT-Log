@@ -36,6 +36,12 @@
                   <i class="fa-solid fa-rotate me-1"></i>Reorder Management
                 </button>
               </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="supplier-products-tab" data-bs-toggle="pill" data-bs-target="#supplier-products" type="button" role="tab">
+                  <i class="fa-solid fa-box me-1"></i>Supplier Products
+                </button>
+              </li>
+              
             </ul>
 
             <!-- Tab Content -->
@@ -96,6 +102,36 @@
                 </div>
                 <div id="reorder-list">Loading...</div>
               </div>
+
+              <!-- Supplier Products Tab -->
+              <div class="tab-pane fade" id="supplier-products" role="tabpanel">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                  <h6 class="mb-0">Supplier Product Catalog</h6>
+                  <button class="btn btn-primary btn-sm" id="add-supplier-product-btn">
+                    <i class="fa-solid fa-plus me-1"></i>Add Product to Supplier
+                  </button>
+                </div>
+                <div class="row mb-3">
+                  <div class="col-md-6">
+                    <div class="input-group input-group-sm">
+                      <span class="input-group-text"><i class="fa-solid fa-search"></i></span>
+                      <input type="text" class="form-control" id="supplier-product-search" placeholder="Search products, supplier, category...">
+                    </div>
+                  </div>
+                  <div class="col-md-6">
+                    <select class="form-select form-select-sm" id="supplier-product-filter">
+                      <option value="">All Suppliers</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="supplier-products-list">Loading...</div>
+              </div>
+
+         
+                
+                
+
+              
             </div>
           </div>
         </div>

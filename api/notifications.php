@@ -11,8 +11,19 @@ try {
     $page = max(1,(int)($_GET['page'] ?? 1));
     $limit = min(100, max(1,(int)($_GET['limit'] ?? 20)));
     $offset = ($page-1)*$limit;
-    $stmt = $conn->prepare('SELECT SQL_CALC_FOUND_ROWS * FROM notifications WHERE user_id = :uid ORDER BY created_at DESC LIMIT :limit OFFSET :offset');
+    
+    // Get notifications for user (direct) or role-based (broadcast)
+    $userRole = $auth['role'] ?? 'operator';
+    
+    $stmt = $conn->prepare('
+      SELECT SQL_CALC_FOUND_ROWS * FROM notifications 
+      WHERE (user_id = :uid OR (user_id IS NULL AND role = :role) OR (user_id IS NULL AND role IS NULL))
+        AND (expires_at IS NULL OR expires_at > NOW())
+      ORDER BY created_at DESC 
+      LIMIT :limit OFFSET :offset
+    ');
     $stmt->bindValue(':uid',$userId,PDO::PARAM_INT);
+    $stmt->bindValue(':role',$userRole,PDO::PARAM_STR);
     $stmt->bindValue(':limit',$limit,PDO::PARAM_INT);
     $stmt->bindValue(':offset',$offset,PDO::PARAM_INT);
     $stmt->execute();

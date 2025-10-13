@@ -8,10 +8,10 @@ require_once __DIR__ . '/common.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 $conn = db_conn();
-$auth = require_auth();
 
 try {
     if ($method === 'GET') {
+        // GET requests don't require auth for reading supplier products
         // Get supplier products
         $supplierId = $_GET['supplier_id'] ?? null;
         $id = $_GET['id'] ?? null;
@@ -61,40 +61,105 @@ try {
     
     if ($method === 'POST') {
         // Create new supplier product
+        $auth = require_auth();
         $data = read_json_body();
         require_params($data, ['supplier_id', 'product_name', 'product_code', 'unit_price']);
         
-        $stmt = $conn->prepare("
-            INSERT INTO supplier_products_catalog 
-            (supplier_id, product_name, product_code, description, category, unit_of_measure, unit_price, currency, minimum_order_qty, lead_time_days, is_active)
-            VALUES 
-            (:supplier_id, :product_name, :product_code, :description, :category, :unit_of_measure, :unit_price, :currency, :minimum_order_qty, :lead_time_days, :is_active)
-        ");
+        // Generate barcode if not provided
+        $barcode = $data['barcode'] ?? null;
+        if (!$barcode) {
+            $barcode = generateEAN13('890'); // Philippines country code
+        }
         
-        $stmt->execute([
-            ':supplier_id' => $data['supplier_id'],
-            ':product_name' => $data['product_name'],
-            ':product_code' => $data['product_code'],
-            ':description' => $data['description'] ?? null,
-            ':category' => $data['category'] ?? null,
-            ':unit_of_measure' => $data['unit_of_measure'] ?? 'pcs',
-            ':unit_price' => $data['unit_price'],
-            ':currency' => $data['currency'] ?? 'PHP',
-            ':minimum_order_qty' => $data['minimum_order_qty'] ?? 1,
-            ':lead_time_days' => $data['lead_time_days'] ?? 7,
-            ':is_active' => $data['is_active'] ?? 1
-        ]);
+        // Check if barcode column exists
+        try {
+            $stmt = $conn->prepare("
+                INSERT INTO supplier_products_catalog 
+                (supplier_id, product_name, product_code, description, category, unit_of_measure, unit_price, currency, minimum_order_qty, lead_time_days, barcode, is_active)
+                VALUES 
+                (:supplier_id, :product_name, :product_code, :description, :category, :unit_of_measure, :unit_price, :currency, :minimum_order_qty, :lead_time_days, :barcode, :is_active)
+            ");
+            
+            $stmt->execute([
+                ':supplier_id' => $data['supplier_id'],
+                ':product_name' => $data['product_name'],
+                ':product_code' => $data['product_code'],
+                ':description' => $data['description'] ?? null,
+                ':category' => $data['category'] ?? null,
+                ':unit_of_measure' => $data['unit_of_measure'] ?? 'pcs',
+                ':unit_price' => $data['unit_price'],
+                ':currency' => $data['currency'] ?? 'PHP',
+                ':minimum_order_qty' => $data['minimum_order_qty'] ?? 1,
+                ':lead_time_days' => $data['lead_time_days'] ?? 7,
+                ':barcode' => $barcode,
+                ':is_active' => $data['is_active'] ?? 1
+            ]);
+        } catch (PDOException $e) {
+            // If barcode column doesn't exist, try without it
+            if (strpos($e->getMessage(), 'barcode') !== false) {
+                $stmt = $conn->prepare("
+                    INSERT INTO supplier_products_catalog 
+                    (supplier_id, product_name, product_code, description, category, unit_of_measure, unit_price, currency, minimum_order_qty, lead_time_days, is_active)
+                    VALUES 
+                    (:supplier_id, :product_name, :product_code, :description, :category, :unit_of_measure, :unit_price, :currency, :minimum_order_qty, :lead_time_days, :is_active)
+                ");
+                
+                $stmt->execute([
+                    ':supplier_id' => $data['supplier_id'],
+                    ':product_name' => $data['product_name'],
+                    ':product_code' => $data['product_code'],
+                    ':description' => $data['description'] ?? null,
+                    ':category' => $data['category'] ?? null,
+                    ':unit_of_measure' => $data['unit_of_measure'] ?? 'pcs',
+                    ':unit_price' => $data['unit_price'],
+                    ':currency' => $data['currency'] ?? 'PHP',
+                    ':minimum_order_qty' => $data['minimum_order_qty'] ?? 1,
+                    ':lead_time_days' => $data['lead_time_days'] ?? 7,
+                    ':is_active' => $data['is_active'] ?? 1
+                ]);
+                
+                $barcode = null; // No barcode if column doesn't exist
+            } else {
+                throw $e; // Re-throw if it's a different error
+            }
+        }
         
         $productId = $conn->lastInsertId();
         
         // Audit log
-        audit_log($conn, 'supplier_product', $productId, 'create', $auth['id'], json_encode($data));
+        log_audit('supplier_product', $productId, 'create', $auth['id'], json_encode($data));
         
-        json_ok(['id' => $productId, 'message' => 'Supplier product created successfully']);
+        json_ok([
+            'id' => $productId, 
+            'barcode' => $barcode,
+            'message' => $barcode ? 'Supplier product created successfully with barcode' : 'Supplier product created (run add_barcode_column.sql to enable barcodes)'
+        ]);
+    }
+    
+    // Helper function to generate EAN-13 barcode
+    function generateEAN13($prefix = '890') {
+        $prefix = str_pad($prefix, 3, '0', STR_PAD_LEFT);
+        $randomDigits = '';
+        for ($i = 0; $i < 9; $i++) {
+            $randomDigits .= rand(0, 9);
+        }
+        $code = $prefix . $randomDigits;
+        $checkDigit = calculateEAN13CheckDigit($code);
+        return $code . $checkDigit;
+    }
+    
+    function calculateEAN13CheckDigit($code) {
+        $sum = 0;
+        for ($i = 0; $i < 12; $i++) {
+            $digit = (int)$code[$i];
+            $sum += ($i % 2 === 0) ? $digit : $digit * 3;
+        }
+        return (10 - ($sum % 10)) % 10;
     }
     
     if ($method === 'PUT') {
         // Update supplier product
+        $auth = require_auth();
         $data = read_json_body();
         require_params($data, ['id']);
         
@@ -119,13 +184,14 @@ try {
         $stmt->execute($params);
         
         // Audit log
-        audit_log($conn, 'supplier_product', $data['id'], 'update', $auth['id'], json_encode($data));
+        log_audit('supplier_product', $data['id'], 'update', $auth['id'], json_encode($data));
         
         json_ok(['message' => 'Supplier product updated successfully']);
     }
     
     if ($method === 'DELETE') {
         // Delete (soft delete) supplier product
+        $auth = require_auth();
         $data = read_json_body();
         require_params($data, ['id']);
         
@@ -133,7 +199,7 @@ try {
         $stmt->execute([':id' => $data['id']]);
         
         // Audit log
-        audit_log($conn, 'supplier_product', $data['id'], 'delete', $auth['id']);
+        log_audit('supplier_product', $data['id'], 'delete', $auth['id']);
         
         json_ok(['message' => 'Supplier product deleted successfully']);
     }

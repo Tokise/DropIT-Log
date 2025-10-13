@@ -38,13 +38,36 @@ try {
             
             if (!$po) json_err('PO not found', 404);
             
-            // Get items
-            $itemsStmt = $conn->prepare("SELECT poi.*, p.sku, p.name 
-                                         FROM purchase_order_items poi 
-                                         JOIN products p ON poi.product_id = p.id 
-                                         WHERE poi.po_id = :id");
+            // Get items - prioritize new po_items table with supplier products
+            $itemsStmt = $conn->prepare("
+                SELECT 
+                    poi.id,
+                    poi.product_name,
+                    poi.quantity,
+                    poi.unit_price,
+                    poi.total_price,
+                    poi.received_quantity,
+                    spc.product_code,
+                    spc.category,
+                    spc.unit_of_measure
+                FROM po_items poi
+                LEFT JOIN supplier_products_catalog spc ON poi.supplier_product_id = spc.id
+                WHERE poi.po_id = :id
+            ");
             $itemsStmt->execute([':id' => $id]);
             $po['items'] = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Fallback to legacy table if no items found
+            if (empty($po['items'])) {
+                $itemsStmt = $conn->prepare("
+                    SELECT poi.*, p.sku as product_code, p.name as product_name 
+                    FROM purchase_order_items poi 
+                    JOIN products p ON poi.product_id = p.id 
+                    WHERE poi.po_id = :id
+                ");
+                $itemsStmt->execute([':id' => $id]);
+                $po['items'] = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
             
             json_ok($po);
         } else {

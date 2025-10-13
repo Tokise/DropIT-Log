@@ -5,9 +5,52 @@ $method = $_SERVER['REQUEST_METHOD'];
 $conn = db_conn();
 
 function po_recalc_total(PDO $conn, int $poId) {
-    $total = (float)$conn->query("SELECT COALESCE(SUM(quantity*unit_price),0) FROM purchase_order_items WHERE po_id = " . (int)$poId)->fetchColumn();
+    // First try the new po_items table
+    $total = (float)$conn->query("SELECT COALESCE(SUM(total_price),0) FROM po_items WHERE po_id = " . (int)$poId)->fetchColumn();
+    
+    // If no items in new table, try legacy table
+    if ($total == 0) {
+        $total = (float)$conn->query("SELECT COALESCE(SUM(quantity*unit_price),0) FROM purchase_order_items WHERE po_id = " . (int)$poId)->fetchColumn();
+    }
+    
+    // Update the PO with the calculated total
     $stmt = $conn->prepare("UPDATE purchase_orders SET total_amount = :t WHERE id = :id");
     $stmt->execute([':t' => $total, ':id' => $poId]);
+    
+    // Also update subtotal, tax_amount if needed
+    $poStmt = $conn->prepare("SELECT supplier_id FROM purchase_orders WHERE id = :id");
+    $poStmt->execute([':id' => $poId]);
+    $supplierId = $poStmt->fetchColumn();
+    
+    if ($supplierId) {
+        $supplierStmt = $conn->prepare("SELECT charges_tax, tax_rate FROM suppliers WHERE id = :id");
+        $supplierStmt->execute([':id' => $supplierId]);
+        $supplier = $supplierStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($supplier) {
+            $subtotal = $total;
+            $taxAmount = 0;
+            $taxRate = 0;
+            
+            if ($supplier['charges_tax'] && $supplier['tax_rate'] > 0) {
+                // If tax is inclusive, calculate subtotal
+                if ($supplier['tax_rate'] > 0) {
+                    $taxRate = $supplier['tax_rate'];
+                    $subtotal = $total / (1 + $taxRate);
+                    $taxAmount = $total - $subtotal;
+                }
+            }
+            
+            $updateStmt = $conn->prepare("UPDATE purchase_orders SET subtotal = :subtotal, tax_rate = :tax_rate, tax_amount = :tax_amount WHERE id = :id");
+            $updateStmt->execute([
+                ':subtotal' => $subtotal,
+                ':tax_rate' => $taxRate,
+                ':tax_amount' => $taxAmount,
+                ':id' => $poId
+            ]);
+        }
+    }
+    
     return $total;
 }
 
@@ -24,9 +67,64 @@ try {
             $stmt->execute([':id' => $id]);
             $po = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$po) json_err('PO not found', 404);
-            $items = $conn->prepare("SELECT poi.*, p.sku, p.name FROM purchase_order_items poi JOIN products p ON poi.product_id=p.id WHERE poi.po_id = :id");
+            
+            // Get items - prioritize new po_items table with supplier products
+            $items = $conn->prepare("
+                SELECT 
+                    poi.id,
+                    poi.product_name as name,
+                    poi.quantity,
+                    poi.unit_price,
+                    poi.total_price,
+                    poi.received_quantity,
+                    spc.product_code as sku,
+                    spc.category,
+                    spc.unit_of_measure
+                FROM po_items poi
+                LEFT JOIN supplier_products_catalog spc ON poi.supplier_product_id = spc.id
+                WHERE poi.po_id = :id
+            ");
             $items->execute([':id' => $id]);
             $po['items'] = $items->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Guarantee 'name', 'product_name', 'sku' fields for all items (new table)
+            foreach ($po['items'] as &$item) {
+                if ((empty($item['name']) || $item['name'] === 'undefined') && !empty($item['product_name'])) {
+                    $item['name'] = $item['product_name'];
+                } elseif ((empty($item['product_name']) || $item['product_name'] === 'undefined') && !empty($item['name'])) {
+                    $item['product_name'] = $item['name'];
+                }
+                if (empty($item['name']) || $item['name'] === 'undefined') {
+                    $item['name'] = 'Unknown';
+                }
+                if (empty($item['product_name']) || $item['product_name'] === 'undefined') {
+                    $item['product_name'] = 'Unknown';
+                }
+                if (empty($item['sku']) || $item['sku'] === 'undefined') {
+                    $item['sku'] = 'N/A';
+                }
+            }
+            unset($item);
+            
+            // Fallback to legacy table if no items found
+            if (empty($po['items'])) {
+                $items = $conn->prepare("SELECT poi.*, p.sku, p.name FROM purchase_order_items poi JOIN products p ON poi.product_id=p.id WHERE poi.po_id = :id");
+                $items->execute([':id' => $id]);
+                $po['items'] = $items->fetchAll(PDO::FETCH_ASSOC);
+                // Guarantee fields for legacy table
+                foreach ($po['items'] as &$item) {
+                    if (empty($item['name']) && !empty($item['product_name'])) {
+                        $item['name'] = $item['product_name'];
+                    } elseif (empty($item['product_name']) && !empty($item['name'])) {
+                        $item['product_name'] = $item['name'];
+                    }
+                    if (empty($item['sku'])) {
+                        $item['sku'] = 'N/A';
+                    }
+                }
+                unset($item);
+            }
+            
             json_ok($po);
         } else {
             $page = max(1, (int)($_GET['page'] ?? 1));
@@ -90,14 +188,18 @@ try {
         
         $conn->beginTransaction();
         try {
-            // Create PO with explicit 'draft' status
-            $stmt = $conn->prepare("INSERT INTO purchase_orders (po_number, supplier_id, warehouse_id, status, total_amount, created_by, order_date, expected_delivery_date, ai_predicted_delivery, notes) VALUES (:po_number, :supplier_id, :warehouse_id, :status, :total_amount, :created_by, :order_date, :expected_delivery_date, :ai_predicted_delivery, :notes)");
+            // Create PO with explicit 'draft' status and tax information
+            $stmt = $conn->prepare("INSERT INTO purchase_orders (po_number, supplier_id, warehouse_id, status, subtotal, tax_rate, tax_amount, total_amount, is_tax_inclusive, created_by, order_date, expected_delivery_date, ai_predicted_delivery, notes) VALUES (:po_number, :supplier_id, :warehouse_id, :status, :subtotal, :tax_rate, :tax_amount, :total_amount, :is_tax_inclusive, :created_by, :order_date, :expected_delivery_date, :ai_predicted_delivery, :notes)");
             $stmt->execute([
                 ':po_number' => $poNumber,
                 ':supplier_id' => (int)$data['supplier_id'],
                 ':warehouse_id' => (int)$warehouseId,
                 ':status' => 'draft',  // Explicit status parameter
+                ':subtotal' => (float)($data['subtotal'] ?? 0),
+                ':tax_rate' => (float)($data['tax_rate'] ?? 0),
+                ':tax_amount' => (float)($data['tax_amount'] ?? 0),
                 ':total_amount' => (float)($data['total_amount'] ?? 0),
+                ':is_tax_inclusive' => (int)($data['is_tax_inclusive'] ?? 0),
                 ':created_by' => $authUserId,
                 ':order_date' => $data['order_date'] ?? date('Y-m-d'),
                 ':expected_delivery_date' => $data['expected_delivery'] ?? null,
@@ -134,7 +236,7 @@ try {
                         $spStmt->execute([':id' => $it['supplier_product_id']]);
                         $productName = $spStmt->fetchColumn();
                         
-                        $totalPrice = $it['quantity'] * $it['unit_price'];
+                        $totalPrice = (float)$it['quantity'] * (float)$it['unit_price'];
                         
                         $ins->execute([
                             ':po_id' => $poId,
@@ -181,6 +283,13 @@ try {
         $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
         if ($id <= 0) json_err('id is required', 422);
         $data = read_json_body();
+        
+        // Handle recalculate totals request
+        if (isset($data['action']) && $data['action'] === 'recalculate_totals') {
+            $total = po_recalc_total($conn, $id);
+            json_ok(['total_amount' => $total, 'message' => 'Totals recalculated successfully']);
+        }
+        
         // Update status or header fields; support receiving items
         if (isset($data['receive'])) {
             // Receive items: [{item_id, qty, performed_by}]

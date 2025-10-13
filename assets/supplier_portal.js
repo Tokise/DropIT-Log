@@ -133,8 +133,8 @@
           <tbody>
             ${po.items.map(item => `
               <tr>
-                <td>${item.name}</td>
-                <td><code>${item.sku}</code></td>
+                <td>${item.name || item.product_name || 'Unknown'}</td>
+                <td><code>${item.product_code || 'N/A'}</code></td>
                 <td>${item.quantity}</td>
                 <td>₱${parseFloat(item.unit_price).toFixed(2)}</td>
                 <td><strong>₱${(item.quantity * item.unit_price).toFixed(2)}</strong></td>

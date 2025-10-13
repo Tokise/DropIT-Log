@@ -105,17 +105,20 @@
   // Load Purchase Orders
   async function loadPurchaseOrders(status = '', page = 1) {
     try {
+      console.log('loadPurchaseOrders called with status:', status, 'page:', page);
       currentPOPage = page;
       const timestamp = new Date().getTime(); // Cache buster
       const url = status 
         ? `api/purchase_orders.php?status=${status}&page=${page}&limit=${itemsPerPage}&_=${timestamp}`
         : `api/purchase_orders.php?page=${page}&limit=${itemsPerPage}&_=${timestamp}`;
       
+      console.log('Calling API URL:', url);
       const response = await Api.get(url);
+      console.log('Raw API Response:', response);
       const container = document.getElementById('purchase-orders-list');
       
       // Debug: log what we received
-      console.log('PO API Response:', response.data);
+      console.log('PO API Response data:', response.data);
       console.log('Filter status:', status);
       console.log('Number of POs:', response.data.items.length);
       response.data.items.forEach(po => {
@@ -646,11 +649,29 @@
   // Enhanced PO Modal with Line Items
   async function showEnhancedPOModal(supplierId, supplierName, products) {
     let lineItems = [];
+    let subtotal = 0;
+    let taxRate = 0; // Will be loaded from supplier settings
+    let taxAmount = 0;
     let totalAmount = 0;
     let modalInstance = null;
+    let supplierChargesTax = false;
+    
+    // Load supplier tax settings
+    try {
+      const supplierResponse = await Api.get(`api/suppliers.php?id=${supplierId}`);
+      const supplier = supplierResponse.data;
+      supplierChargesTax = supplier.charges_tax == 1;
+      taxRate = supplierChargesTax ? parseFloat(supplier.tax_rate || 0.12) : 0;
+      console.log(`Supplier ${supplierName} - Charges Tax: ${supplierChargesTax}, Rate: ${taxRate}`);
+    } catch (err) {
+      console.error('Failed to load supplier tax settings:', err);
+      // Default to 12% VAT if unable to load
+      supplierChargesTax = true;
+      taxRate = 0.12;
+    }
     
     const productOptions = products.map(p => 
-      `<option value="${p.id}" data-price="${p.unit_price}">${p.name} (${p.sku}) - ₱${parseFloat(p.unit_price).toFixed(2)}</option>`
+      `<option value="${p.id}" data-price="${p.unit_price}" data-name="${p.product_name}" data-code="${p.product_code}">${p.product_name} (${p.product_code}) - ₱${parseFloat(p.unit_price).toFixed(2)}</option>`
     ).join('');
     
     function renderLineItems() {
@@ -666,7 +687,7 @@
           <tbody>
             ${lineItems.map((item, idx) => `
               <tr>
-                <td><small>${item.product_name}</small></td>
+                <td><small>${item.product_name}</small><br><code class="text-muted" style="font-size: 0.7em;">${item.product_code || ''}</code></td>
                 <td>${item.quantity}</td>
                 <td>₱${parseFloat(item.unit_price).toFixed(2)}</td>
                 <td><strong>₱${(item.quantity * item.unit_price).toFixed(2)}</strong></td>
@@ -675,7 +696,9 @@
             `).join('')}
           </tbody>
           <tfoot>
-            <tr><td colspan="3" class="text-end"><strong>Total:</strong></td><td colspan="2"><strong>₱${totalAmount.toFixed(2)}</strong></td></tr>
+            <tr><td colspan="3" class="text-end">Subtotal:</td><td colspan="2">₱${subtotal.toFixed(2)}</td></tr>
+            ${supplierChargesTax ? `<tr><td colspan="3" class="text-end">Tax (${(taxRate * 100).toFixed(0)}% VAT):</td><td colspan="2">₱${taxAmount.toFixed(2)}</td></tr>` : '<tr><td colspan="3" class="text-end text-muted"><em>Tax Exempt</em></td><td colspan="2">₱0.00</td></tr>'}
+            <tr class="table-primary"><td colspan="3" class="text-end"><strong>Total Amount:</strong></td><td colspan="2"><strong>₱${totalAmount.toFixed(2)}</strong></td></tr>
           </tfoot>
         </table>
       `;
@@ -692,7 +715,10 @@
         btn.addEventListener('click', function() {
           const idx = parseInt(this.getAttribute('data-remove-idx'));
           lineItems.splice(idx, 1);
-          totalAmount = lineItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+          // Recalculate totals
+          subtotal = lineItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+          taxAmount = subtotal * taxRate;
+          totalAmount = subtotal + taxAmount;
           updateModal();
         });
       });
@@ -750,14 +776,25 @@
             return false;
           }
           
-          const productName = document.getElementById('line-product').selectedOptions[0].text;
-          return { product_id: parseInt(productId), product_name: productName, quantity, unit_price: price };
+          const selectedOption = document.getElementById('line-product').selectedOptions[0];
+          const productName = selectedOption.dataset.name || selectedOption.text;
+          const productCode = selectedOption.dataset.code || '';
+          return { 
+            supplier_product_id: parseInt(productId), 
+            product_name: productName,
+            product_code: productCode,
+            quantity, 
+            unit_price: price 
+          };
         }
       });
       
       if (itemData) {
         lineItems.push(itemData);
-        totalAmount = lineItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+        // Recalculate totals with tax
+        subtotal = lineItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+        taxAmount = subtotal * taxRate;
+        totalAmount = subtotal + taxAmount;
         
         // Show success toast
         const Toast = Swal.mixin({
@@ -808,8 +845,22 @@
             </div>
             
             <div class="mb-3">
-              <label class="form-label">Total Amount</label>
-              <div class="form-control bg-light"><strong id="po-total-amount">₱${totalAmount.toFixed(2)}</strong></div>
+              <div class="card">
+                <div class="card-body">
+                  <div class="d-flex justify-content-between mb-1">
+                    <span>Subtotal:</span>
+                    <span>₱${subtotal.toFixed(2)}</span>
+                  </div>
+                  <div class="d-flex justify-content-between mb-2">
+                    ${supplierChargesTax ? `<span>Tax (${(taxRate * 100).toFixed(0)}% VAT):</span><span>₱${taxAmount.toFixed(2)}</span>` : '<span class="text-muted"><em>Tax Exempt</em></span><span>₱0.00</span>'}
+                  </div>
+                  <hr class="my-2">
+                  <div class="d-flex justify-content-between">
+                    <strong>Total Amount:</strong>
+                    <strong class="text-primary" id="po-total-amount">₱${totalAmount.toFixed(2)}</strong>
+                  </div>
+                </div>
+              </div>
             </div>
             
             <div class="mb-3">
@@ -845,7 +896,11 @@
             expected_delivery: aiDeliveryDate,
             notes: document.getElementById('po-notes').value.trim(),
             items: lineItems,
+            subtotal: subtotal,
+            tax_rate: taxRate,
+            tax_amount: taxAmount,
             total_amount: totalAmount,
+            is_tax_inclusive: supplierChargesTax ? 1 : 0,
             use_ai_prediction: true
           };
         }
@@ -1053,9 +1108,18 @@
 
   // Show Create PO Modal with pre-selected supplier
   async function showCreatePOModalWithSupplier(preSelectedSupplierId, preSelectedSupplierName) {
-    // Load products for line items
-    const productsResponse = await Api.get('api/products.php?limit=1000');
+    // Load supplier-specific products from their catalog
+    const productsResponse = await Api.get(`api/supplier_products.php?supplier_id=${preSelectedSupplierId}`);
     const products = productsResponse.data.items || [];
+    
+    if (products.length === 0) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'No Products Available',
+        text: `${preSelectedSupplierName} has no products in their catalog. Please add products to this supplier first.`
+      });
+      return;
+    }
     
     // Open enhanced PO creation modal
     await showEnhancedPOModal(preSelectedSupplierId, preSelectedSupplierName, products);
@@ -1063,15 +1127,11 @@
 
   // Show Create PO Modal
   async function showCreatePOModal() {
-    // First, load suppliers and products
+    // First, load suppliers only (products will be loaded after supplier selection)
     try {
-      const [suppliersResponse, productsResponse] = await Promise.all([
-        Api.get('api/suppliers.php?limit=100'),
-        Api.get('api/products.php?limit=1000')
-      ]);
+      const suppliersResponse = await Api.get('api/suppliers.php?limit=100');
       
       const suppliers = suppliersResponse.data.items || [];
-      const products = productsResponse.data.items || [];
       
       if (suppliers.length === 0) {
         Swal.fire({
@@ -1119,6 +1179,19 @@
       });
       
       if (supplierSelection) {
+        // Load supplier-specific products
+        const productsResponse = await Api.get(`api/supplier_products.php?supplier_id=${supplierSelection.supplier_id}`);
+        const products = productsResponse.data.items || [];
+        
+        if (products.length === 0) {
+          Swal.fire({
+            icon: 'warning',
+            title: 'No Products Available',
+            text: `${supplierSelection.supplier_name} has no products in their catalog. Please add products to this supplier first.`
+          });
+          return;
+        }
+        
         // Open enhanced modal with selected supplier
         await showEnhancedPOModal(supplierSelection.supplier_id, supplierSelection.supplier_name, products);
       }
@@ -1136,6 +1209,18 @@
     // Load initial data
     loadSuppliers();
     
+    // Load purchase orders if we're on the PO tab
+    const hash = window.location.hash.substring(1);
+    const params = new URLSearchParams(hash);
+    const currentTab = params.get('tab');
+    
+    if (currentTab === 'purchase-orders') {
+      const filter = params.get('filter') || 'all';
+      loadPurchaseOrders(filter);
+    } else if (currentTab === 'performance') {
+      loadSupplierPerformance();
+    }
+    
     // Supplier search
     let supplierSearchTimeout;
     document.getElementById('supplier-search').addEventListener('input', (e) => {
@@ -1149,24 +1234,44 @@
     document.querySelectorAll('input[name="po-filter"]').forEach(radio => {
       radio.addEventListener('change', (e) => {
         loadPurchaseOrders(e.target.value);
+        window.location.hash = `tab=purchase-orders&filter=${e.target.value}`;
       });
     });
     
-    // Tab change events
+    // Tab change handlers
+    document.getElementById('suppliers-tab').addEventListener('shown.bs.tab', () => {
+      window.location.hash = 'tab=suppliers';
+      loadSuppliers();
+    });
+    
     document.getElementById('purchase-orders-tab').addEventListener('shown.bs.tab', () => {
-      loadPurchaseOrders();
-    });
-    
-    // PO filter buttons
-    document.querySelectorAll('input[name="po-filter"]').forEach(radio => {
-      radio.addEventListener('change', (e) => {
-        const status = e.target.value;
-        loadPurchaseOrders(status);
-      });
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const filter = params.get('filter') || '';
+      window.location.hash = `tab=purchase-orders&filter=${filter}`;
+      loadPurchaseOrders(filter);
     });
     
     document.getElementById('reorder-tab').addEventListener('shown.bs.tab', () => {
+      window.location.hash = 'tab=reorder';
       loadReorderAlerts();
+    });
+    
+    // Supplier products tab
+    document.getElementById('supplier-products-tab').addEventListener('shown.bs.tab', () => {
+      // Check if there's a page in the URL hash
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const page = parseInt(params.get('page')) || 1;
+      const supplier = params.get('supplier') || '';
+      const search = params.get('search') || '';
+      
+      loadSupplierProducts(supplier, page, search);
+      loadSupplierFilterOptions();
+      
+      // Set the search and filter inputs
+      if (search) document.getElementById('supplier-product-search').value = search;
+      if (supplier) document.getElementById('supplier-product-filter').value = supplier;
     });
     
     // Add supplier button
@@ -1174,6 +1279,23 @@
     
     // Create PO button
     document.getElementById('create-po-btn').addEventListener('click', showCreatePOModal);
+    
+    // Add supplier product button
+    document.getElementById('add-supplier-product-btn').addEventListener('click', showAddSupplierProductModal);
+    
+    // Supplier product filter
+    document.getElementById('supplier-product-filter').addEventListener('change', (e) => {
+      loadSupplierProducts(e.target.value, 1, currentProductsSearch);
+    });
+    
+    // Supplier product search
+    let productSearchTimeout;
+    document.getElementById('supplier-product-search').addEventListener('input', (e) => {
+      clearTimeout(productSearchTimeout);
+      productSearchTimeout = setTimeout(() => {
+        loadSupplierProducts(currentProductsSupplier, 1, e.target.value);
+      }, 300);
+    });
     
     // Approve all button
     document.getElementById('approve-all-btn').addEventListener('click', () => {
@@ -1184,5 +1306,811 @@
       });
     });
   });
+
+  // ============================================
+  // SUPPLIER PRODUCTS MANAGEMENT
+  // ============================================
+
+  // Supplier Products Pagination State
+  let currentProductsPage = 1;
+  let productsPerPage = 5;
+  let currentProductsSearch = '';
+  let currentProductsSupplier = '';
+
+  // Load Supplier Products with Pagination
+  window.loadSupplierProducts = async function(supplierId = '', page = 1, search = '') {
+    try {
+      // Ensure page is a number
+      page = parseInt(page) || 1;
+      
+      currentProductsPage = page;
+      currentProductsSearch = search;
+      currentProductsSupplier = supplierId;
+      
+      // Update URL hash with current page
+      const hashParams = new URLSearchParams();
+      hashParams.set('tab', 'supplier-products');
+      hashParams.set('page', page);
+      if (supplierId) hashParams.set('supplier', supplierId);
+      if (search) hashParams.set('search', search);
+      window.location.hash = hashParams.toString();
+      
+      console.log('Loading products - Page:', page, 'Supplier:', supplierId, 'Search:', search);
+      
+      const container = document.getElementById('supplier-products-list');
+      container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div><p class="mt-2">Loading products...</p></div>';
+      
+      // Scroll to top of the products list
+      container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      
+      const url = supplierId 
+        ? `api/supplier_products.php?supplier_id=${supplierId}`
+        : 'api/supplier_products.php';
+      
+      console.log('Loading supplier products from:', url);
+      const response = await Api.get(url);
+      console.log('Supplier products response:', response);
+      
+      if (!response.data || !response.data.items || response.data.items.length === 0) {
+        container.innerHTML = '<div class="alert alert-info">No supplier products found. Add products to suppliers to enable purchase orders.</div>';
+        return;
+      }
+      
+      let products = response.data.items;
+      
+      // Apply search filter
+      if (search) {
+        const searchLower = search.toLowerCase();
+        products = products.filter(p => 
+          p.product_name.toLowerCase().includes(searchLower) ||
+          p.product_code.toLowerCase().includes(searchLower) ||
+          p.supplier_name.toLowerCase().includes(searchLower) ||
+          (p.category && p.category.toLowerCase().includes(searchLower))
+        );
+      }
+      
+      // Calculate pagination
+      const totalProducts = products.length;
+      const totalPages = Math.ceil(totalProducts / productsPerPage);
+      const startIndex = (page - 1) * productsPerPage;
+      const endIndex = startIndex + productsPerPage;
+      const paginatedProducts = products.slice(startIndex, endIndex);
+      
+      console.log('Pagination:', {
+        totalProducts,
+        totalPages,
+        currentPage: page,
+        perPage: productsPerPage,
+        startIndex,
+        endIndex,
+        showing: paginatedProducts.length
+      });
+      
+      if (paginatedProducts.length === 0) {
+        container.innerHTML = '<div class="alert alert-info">No products match your search.</div>';
+        return;
+      }
+      
+      const rows = paginatedProducts.map(product => `
+        <tr>
+          <td><strong>${product.product_name}</strong><br><small class="text-muted">${product.product_code}</small></td>
+          <td>${product.supplier_name}</td>
+          <td>${product.category || '-'}</td>
+          <td>${product.unit_of_measure || 'pcs'}</td>
+          <td><strong>₱${parseFloat(product.unit_price).toFixed(2)}</strong></td>
+          <td>${product.minimum_order_qty || 1}</td>
+          <td>${product.lead_time_days || 7} days</td>
+          <td><span class="badge ${product.is_active ? 'bg-success' : 'bg-secondary'}">${product.is_active ? 'Active' : 'Inactive'}</span></td>
+          <td>
+            <button class="btn btn-sm btn-outline-primary" onclick="editSupplierProduct(${product.id})" title="Edit">
+              <i class="fa-solid fa-edit"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteSupplierProduct(${product.id}, '${product.product_name.replace(/'/g, "\\'")}')">
+              <i class="fa-solid fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+      `).join('');
+      
+      // Generate pagination controls
+      const paginationHtml = generateProductsPagination(page, totalPages, totalProducts);
+      
+      container.innerHTML = `
+        <div class="table-responsive">
+          <table class="table table-sm table-hover">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Supplier</th>
+                <th>Category</th>
+                <th>Unit</th>
+                <th>Price</th>
+                <th>Min Order</th>
+                <th>Lead Time</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${paginationHtml}
+      `;
+    } catch (err) {
+      console.error('Error loading supplier products:', err);
+      const container = document.getElementById('supplier-products-list');
+      if (container) {
+        container.innerHTML = `<div class="alert alert-danger">Failed to load supplier products: ${err.message}</div>`;
+      }
+    }
+  };
+
+  // Generate Pagination HTML for Products
+  function generateProductsPagination(currentPage, totalPages, totalItems) {
+    if (totalPages <= 1) {
+      return `<div class="text-muted small text-center mt-2">Showing ${totalItems} products</div>`;
+    }
+    
+    const startItem = ((currentPage - 1) * productsPerPage) + 1;
+    const endItem = Math.min(currentPage * productsPerPage, totalItems);
+    
+    let paginationButtons = '';
+    
+    // Previous button
+    paginationButtons += `
+      <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+        <a class="page-link" href="#" onclick="event.preventDefault(); loadSupplierProducts('${currentProductsSupplier}', ${currentPage - 1}, '${currentProductsSearch}');">
+          <i class="fa-solid fa-chevron-left"></i>
+        </a>
+      </li>
+    `;
+    
+    // Page numbers
+    const maxVisiblePages = 5;
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    
+    if (endPage - startPage < maxVisiblePages - 1) {
+      startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+    
+    if (startPage > 1) {
+      paginationButtons += `
+        <li class="page-item">
+          <a class="page-link" href="#" onclick="event.preventDefault(); loadSupplierProducts('${currentProductsSupplier}', 1, '${currentProductsSearch}');">1</a>
+        </li>
+      `;
+      if (startPage > 2) {
+        paginationButtons += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+      }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+      paginationButtons += `
+        <li class="page-item ${i === currentPage ? 'active' : ''}">
+          <a class="page-link" href="#" onclick="event.preventDefault(); loadSupplierProducts('${currentProductsSupplier}', ${i}, '${currentProductsSearch}');">${i}</a>
+        </li>
+      `;
+    }
+    
+    if (endPage < totalPages) {
+      if (endPage < totalPages - 1) {
+        paginationButtons += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+      }
+      paginationButtons += `
+        <li class="page-item">
+          <a class="page-link" href="#" onclick="event.preventDefault(); loadSupplierProducts('${currentProductsSupplier}', ${totalPages}, '${currentProductsSearch}');">${totalPages}</a>
+        </li>
+      `;
+    }
+    
+    // Next button
+    paginationButtons += `
+      <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+        <a class="page-link" href="#" onclick="event.preventDefault(); loadSupplierProducts('${currentProductsSupplier}', ${currentPage + 1}, '${currentProductsSearch}');">
+          <i class="fa-solid fa-chevron-right"></i>
+        </a>
+      </li>
+    `;
+    
+    return `
+      <div class="d-flex justify-content-between align-items-center mt-3">
+        <div class="text-muted small">
+          Showing ${startItem}-${endItem} of ${totalItems} products
+        </div>
+        <nav>
+          <ul class="pagination pagination-sm mb-0">
+            ${paginationButtons}
+          </ul>
+        </nav>
+      </div>
+    `;
+  }
+
+  // Load supplier filter options
+  async function loadSupplierFilterOptions() {
+    try {
+      const response = await Api.get('api/suppliers.php?limit=100');
+      const suppliers = response.data.items || [];
+      
+      const options = suppliers
+        .filter(s => s.is_active)
+        .map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`)
+        .join('');
+      
+      const filterSelect = document.getElementById('supplier-product-filter');
+      filterSelect.innerHTML = '<option value="">All Suppliers</option>' + options;
+    } catch (err) {
+      console.error('Failed to load supplier filter options:', err);
+    }
+  }
+
+  // Show Add Supplier Product Modal
+  async function showAddSupplierProductModal() {
+    try {
+      // Load suppliers
+      const suppliersResponse = await Api.get('api/suppliers.php?limit=100');
+      const suppliers = suppliersResponse.data.items || [];
+      
+      if (suppliers.length === 0) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'No Suppliers',
+          text: 'Please add suppliers first before adding products'
+        });
+        return;
+      }
+      
+      const supplierOptions = suppliers
+        .filter(s => s.is_active)
+        .map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`)
+        .join('');
+      
+      const { value: formValues } = await Swal.fire({
+        title: 'Add Supplier Product',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">Supplier <span class="text-danger">*</span></label>
+              <select id="sp-supplier" class="form-control">
+                <option value="">Select supplier...</option>
+                ${supplierOptions}
+              </select>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Product Name <span class="text-danger">*</span></label>
+              <input type="text" id="sp-name" class="form-control" placeholder="e.g., Office Chair Executive">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Product Code <span class="text-danger">*</span></label>
+              <input type="text" id="sp-code" class="form-control" placeholder="e.g., ABC-CHAIR-001">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Description</label>
+              <textarea id="sp-description" class="form-control" rows="2" placeholder="Product description"></textarea>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Category</label>
+                <input type="text" id="sp-category" class="form-control" placeholder="e.g., Furniture">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Unit of Measure</label>
+                <input type="text" id="sp-uom" class="form-control" placeholder="e.g., pcs" value="pcs">
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Unit Price (₱) <span class="text-danger">*</span></label>
+                <input type="number" id="sp-price" class="form-control" step="0.01" min="0" placeholder="0.00">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Currency</label>
+                <input type="text" id="sp-currency" class="form-control" value="PHP" readonly>
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Minimum Order Qty</label>
+                <input type="number" id="sp-min-qty" class="form-control" min="1" value="1">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Lead Time (days)</label>
+                <input type="number" id="sp-lead-time" class="form-control" min="1" value="7">
+              </div>
+            </div>
+            
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" id="sp-active" checked>
+              <label class="form-check-label" for="sp-active">
+                Active Product
+              </label>
+            </div>
+          </div>
+        `,
+        width: '700px',
+        showCancelButton: true,
+        confirmButtonText: '<i class="fa-solid fa-save me-2"></i>Save Product',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#0d6efd',
+        preConfirm: () => {
+          const supplierId = document.getElementById('sp-supplier').value;
+          const name = document.getElementById('sp-name').value.trim();
+          const code = document.getElementById('sp-code').value.trim();
+          const price = document.getElementById('sp-price').value;
+          
+          if (!supplierId) {
+            Swal.showValidationMessage('Please select a supplier');
+            return false;
+          }
+          if (!name) {
+            Swal.showValidationMessage('Product name is required');
+            return false;
+          }
+          if (!code) {
+            Swal.showValidationMessage('Product code is required');
+            return false;
+          }
+          if (!price || parseFloat(price) < 0) {
+            Swal.showValidationMessage('Valid unit price is required');
+            return false;
+          }
+          
+          return {
+            supplier_id: parseInt(supplierId),
+            product_name: name,
+            product_code: code,
+            description: document.getElementById('sp-description').value.trim(),
+            category: document.getElementById('sp-category').value.trim(),
+            unit_of_measure: document.getElementById('sp-uom').value.trim() || 'pcs',
+            unit_price: parseFloat(price),
+            currency: 'PHP',
+            minimum_order_qty: parseInt(document.getElementById('sp-min-qty').value) || 1,
+            lead_time_days: parseInt(document.getElementById('sp-lead-time').value) || 7,
+            is_active: document.getElementById('sp-active').checked ? 1 : 0
+          };
+        }
+      });
+      
+      if (formValues) {
+        Swal.fire({
+          title: 'Creating Product...',
+          html: '<div class="spinner-border text-primary"></div>',
+          showConfirmButton: false,
+          allowOutsideClick: false
+        });
+        
+        await Api.send('api/supplier_products.php', 'POST', formValues);
+        
+        await Swal.fire({
+          icon: 'success',
+          title: 'Product Added!',
+          html: `<p><strong>${formValues.product_name}</strong> has been added to the supplier catalog.</p>`,
+          timer: 3000
+        });
+        
+        loadSupplierProducts();
+      }
+    } catch (err) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Failed to Add Product',
+        text: err.message
+      });
+    }
+  }
+
+  // Edit Supplier Product
+  window.editSupplierProduct = async function(productId) {
+    try {
+      // Load product details
+      const response = await Api.get(`api/supplier_products.php?id=${productId}`);
+      const product = response.data;
+      
+      const { value: formValues } = await Swal.fire({
+        title: 'Edit Supplier Product',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">Supplier</label>
+              <div class="form-control bg-light"><strong>${product.supplier_name}</strong></div>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Product Name <span class="text-danger">*</span></label>
+              <input type="text" id="sp-name" class="form-control" value="${product.product_name}">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Product Code <span class="text-danger">*</span></label>
+              <input type="text" id="sp-code" class="form-control" value="${product.product_code}">
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Description</label>
+              <textarea id="sp-description" class="form-control" rows="2">${product.description || ''}</textarea>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Category</label>
+                <input type="text" id="sp-category" class="form-control" value="${product.category || ''}">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Unit of Measure</label>
+                <input type="text" id="sp-uom" class="form-control" value="${product.unit_of_measure || 'pcs'}">
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Unit Price (₱) <span class="text-danger">*</span></label>
+                <input type="number" id="sp-price" class="form-control" step="0.01" min="0" value="${product.unit_price}">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Currency</label>
+                <input type="text" id="sp-currency" class="form-control" value="${product.currency || 'PHP'}" readonly>
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Minimum Order Qty</label>
+                <input type="number" id="sp-min-qty" class="form-control" min="1" value="${product.minimum_order_qty || 1}">
+              </div>
+              
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Lead Time (days)</label>
+                <input type="number" id="sp-lead-time" class="form-control" min="1" value="${product.lead_time_days || 7}">
+              </div>
+            </div>
+            
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" id="sp-active" ${product.is_active ? 'checked' : ''}>
+              <label class="form-check-label" for="sp-active">
+                Active Product
+              </label>
+            </div>
+          </div>
+        `,
+        width: '700px',
+        showCancelButton: true,
+        confirmButtonText: '<i class="fa-solid fa-save me-2"></i>Update Product',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#0d6efd',
+        preConfirm: () => {
+          const name = document.getElementById('sp-name').value.trim();
+          const code = document.getElementById('sp-code').value.trim();
+          const price = document.getElementById('sp-price').value;
+          
+          if (!name || !code || !price || parseFloat(price) < 0) {
+            Swal.showValidationMessage('Please fill all required fields');
+            return false;
+          }
+          
+          return {
+            id: productId,
+            product_name: name,
+            product_code: code,
+            description: document.getElementById('sp-description').value.trim(),
+            category: document.getElementById('sp-category').value.trim(),
+            unit_of_measure: document.getElementById('sp-uom').value.trim() || 'pcs',
+            unit_price: parseFloat(price),
+            minimum_order_qty: parseInt(document.getElementById('sp-min-qty').value) || 1,
+            lead_time_days: parseInt(document.getElementById('sp-lead-time').value) || 7,
+            is_active: document.getElementById('sp-active').checked ? 1 : 0
+          };
+        }
+      });
+      
+      if (formValues) {
+        Swal.fire({
+          title: 'Updating Product...',
+          html: '<div class="spinner-border text-primary"></div>',
+          showConfirmButton: false,
+          allowOutsideClick: false
+        });
+        
+        await Api.send('api/supplier_products.php', 'PUT', formValues);
+        
+        await Swal.fire({
+          icon: 'success',
+          title: 'Product Updated!',
+          timer: 2000
+        });
+        
+        loadSupplierProducts();
+      }
+    } catch (err) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Failed to Update Product',
+        text: err.message
+      });
+    }
+  };
+
+  // Delete Supplier Product
+  window.deleteSupplierProduct = async function(productId, productName) {
+    const result = await Swal.fire({
+      title: 'Delete Product?',
+      html: `Are you sure you want to delete <strong>${productName}</strong>?<br><small class="text-muted">This will deactivate the product.</small>`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#d33',
+      cancelButtonColor: '#3085d6',
+      confirmButtonText: 'Yes, delete it!'
+    });
+
+    if (result.isConfirmed) {
+      try {
+        await Api.send('api/supplier_products.php', 'DELETE', { id: productId });
+        Swal.fire('Deleted!', 'The product has been deactivated.', 'success');
+        loadSupplierProducts();
+      } catch (err) {
+        Swal.fire('Error', `Failed to delete product: ${err.message}`, 'error');
+      }
+    }
+  };
+
+  
+
+  // ============================================
+  // SUPPLIER PERFORMANCE FUNCTIONS
+  // ============================================
+
+  // Load Supplier Performance
+  async function loadSupplierPerformance() {
+    try {
+      const container = document.getElementById('performance-list');
+      container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div><p class="mt-2">Loading performance data...</p></div>';
+      
+      // First get all suppliers
+      const suppliersResponse = await Api.get('api/suppliers.php');
+      const suppliers = suppliersResponse.data.items || [];
+      
+      // Then get performance for each
+      const performancePromises = suppliers.map(supplier => 
+        Api.get(`api/supplier_performance.php?supplier_id=${supplier.id}`)
+          .then(response => ({ ...response.data.performance, supplier_name: supplier.name, supplier_code: supplier.code, supplier_id: supplier.id }))
+          .catch(() => null)
+      );
+      
+      const performances = (await Promise.all(performancePromises)).filter(p => p !== null);
+      
+      if (performances.length === 0) {
+        container.innerHTML = '<div class="alert alert-info">No performance data available.</div>';
+        return;
+      }
+      
+      // Calculate summary stats
+      const totalSuppliers = performances.length;
+      const avgOnTimeRate = (performances.reduce((sum, p) => sum + parseFloat(p.on_time_rate || 0), 0) / totalSuppliers).toFixed(1);
+      const avgQualityRate = (performances.reduce((sum, p) => sum + parseFloat(p.quality_rate || 0), 0) / totalSuppliers).toFixed(1);
+      const avgRating = (performances.reduce((sum, p) => sum + parseFloat(p.overall_rating || 0), 0) / totalSuppliers).toFixed(2);
+      
+      // Update summary cards
+      document.getElementById('total-suppliers-count').textContent = totalSuppliers;
+      document.getElementById('avg-ontime-rate').textContent = avgOnTimeRate + '%';
+      document.getElementById('avg-quality-rate').textContent = avgQualityRate + '%';
+      document.getElementById('avg-rating').textContent = avgRating + ' ⭐';
+      
+      // Generate performance cards
+      const cards = performances.map(perf => {
+        const stars = '⭐'.repeat(Math.round(parseFloat(perf.overall_rating || 0)));
+        
+        return `
+          <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card h-100">
+              <div class="card-body">
+                <h6 class="card-title">${perf.supplier_name}</h6>
+                <p class="text-muted small mb-2">${perf.supplier_code}</p>
+                <div class="mb-2">
+                  <h4>${stars} <small class="text-muted">${parseFloat(perf.overall_rating || 0).toFixed(2)}</small></h4>
+                </div>
+                <hr>
+                <div class="row g-2 small">
+                  <div class="col-6">
+                    <strong>Total POs:</strong> ${perf.total_pos || 0}
+                  </div>
+                  <div class="col-6">
+                    <strong>On-Time:</strong> <span class="badge bg-success">${parseFloat(perf.on_time_rate || 0).toFixed(1)}%</span>
+                  </div>
+                  <div class="col-6">
+                    <strong>Quality:</strong> <span class="badge bg-info">${parseFloat(perf.quality_rate || 0).toFixed(1)}%</span>
+                  </div>
+                  <div class="col-6">
+                    <strong>Response:</strong> ${parseFloat(perf.avg_response_time_hours || 0).toFixed(1)}h
+                  </div>
+                </div>
+                <hr>
+                <button class="btn btn-sm btn-outline-primary w-100" onclick="viewDetailedPerformance(${perf.supplier_id})">
+                  <i class="fa-solid fa-chart-bar me-1"></i>View Details
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+      
+      container.innerHTML = `<div class="row">${cards}</div>`;
+    } catch (err) {
+      document.getElementById('performance-list').innerHTML = `<div class="alert alert-danger">Failed to load performance data: ${err.message}</div>`;
+    }
+  }
+
+  // View Detailed Performance
+  window.viewDetailedPerformance = async function(supplierId) {
+    try {
+      const response = await Api.get(`api/supplier_performance.php?supplier_id=${supplierId}`);
+      const data = response.data;
+      const supplier = data.supplier;
+      const perf = data.performance;
+      
+      const stars = '⭐'.repeat(Math.round(parseFloat(perf.overall_rating || 0)));
+      
+      Swal.fire({
+        title: `Performance: ${supplier.name}`,
+        html: `
+          <div class="text-start">
+            <div class="text-center mb-3">
+              <h2>${stars}</h2>
+              <h4>${parseFloat(perf.overall_rating || 0).toFixed(2)} / 5.00</h4>
+            </div>
+            <hr>
+            <h6>Delivery Performance</h6>
+            <p><strong>Total POs:</strong> ${perf.total_pos || 0}</p>
+            <p><strong>On-Time Deliveries:</strong> ${perf.on_time_deliveries || 0} (${parseFloat(perf.on_time_rate || 0).toFixed(1)}%)</p>
+            <p><strong>Late Deliveries:</strong> ${perf.late_deliveries || 0}</p>
+            <hr>
+            <h6>Quality Performance</h6>
+            <p><strong>Total Items Received:</strong> ${perf.total_items_received || 0}</p>
+            <p><strong>Passed QC:</strong> ${perf.items_passed_qc || 0} (${parseFloat(perf.quality_rate || 0).toFixed(1)}%)</p>
+            <p><strong>Failed QC:</strong> ${perf.items_failed_qc || 0}</p>
+            <hr>
+            <h6>Response Time</h6>
+            <p><strong>Average Response:</strong> ${parseFloat(perf.avg_response_time_hours || 0).toFixed(1)} hours</p>
+            <hr>
+            <p class="text-muted small">Last calculated: ${perf.last_calculated_at ? new Date(perf.last_calculated_at).toLocaleString() : '-'}</p>
+          </div>
+        `,
+        width: '600px',
+        showCancelButton: true,
+        confirmButtonText: 'Recalculate',
+        cancelButtonText: 'Close'
+      }).then(async (result) => {
+        if (result.isConfirmed) {
+          await recalculatePerformance(supplierId);
+        }
+      });
+    } catch (err) {
+      Swal.fire('Error', `Failed to load performance details: ${err.message}`, 'error');
+    }
+  };
+
+  // Recalculate Performance
+  async function recalculatePerformance(supplierId) {
+    try {
+      Swal.fire({
+        title: 'Recalculating...',
+        html: '<div class="spinner-border text-primary"></div>',
+        showConfirmButton: false,
+        allowOutsideClick: false
+      });
+      
+      await Api.send('api/supplier_performance.php', 'POST', { supplier_id: supplierId });
+      
+      await Swal.fire({
+        icon: 'success',
+        title: 'Performance Recalculated!',
+        timer: 2000
+      });
+      
+      loadSupplierPerformance();
+    } catch (err) {
+      Swal.fire('Error', `Failed to recalculate: ${err.message}`, 'error');
+    }
+  }
+
+  // Recalculate All Performance
+  window.recalculateAllPerformance = async function() {
+    try {
+      const result = await Swal.fire({
+        title: 'Recalculate All?',
+        text: 'This will recalculate performance metrics for all suppliers.',
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Yes, recalculate'
+      });
+      
+      if (!result.isConfirmed) return;
+      
+      Swal.fire({
+        title: 'Recalculating All...',
+        html: '<div class="spinner-border text-primary"></div>',
+        showConfirmButton: false,
+        allowOutsideClick: false
+      });
+      
+      // Get all suppliers
+      const suppliersResponse = await Api.get('api/suppliers.php');
+      const suppliers = suppliersResponse.data.items || [];
+      
+      // Recalculate each
+      for (const supplier of suppliers) {
+        await Api.send('api/supplier_performance.php', 'POST', { supplier_id: supplier.id });
+      }
+      
+      await Swal.fire({
+        icon: 'success',
+        title: 'All Performance Recalculated!',
+        timer: 2000
+      });
+      
+      loadSupplierPerformance();
+    } catch (err) {
+      Swal.fire('Error', `Failed to recalculate: ${err.message}`, 'error');
+    }
+  };
+
+  // ============================================
+  // EVENT LISTENERS
+  // ============================================
+
+  // Goods Receipt tab
+  document.getElementById('goods-receipt-tab').addEventListener('shown.bs.tab', () => {
+    window.location.hash = 'tab=goods-receipt';
+    loadGoodsReceipts();
+  });
+
+  // Performance tab
+  document.getElementById('performance-tab').addEventListener('shown.bs.tab', () => {
+    window.location.hash = 'tab=performance';
+    loadSupplierPerformance();
+  });
+
+  // Receive Goods button
+  document.getElementById('receive-goods-btn').addEventListener('click', receiveGoods);
+
+  // Receipt filters
+  document.getElementById('receipt-status-filter').addEventListener('change', (e) => {
+    const qcStatus = document.getElementById('receipt-qc-filter').value;
+    const search = document.getElementById('receipt-search').value;
+    loadGoodsReceipts(e.target.value, qcStatus, search);
+  });
+
+  document.getElementById('receipt-qc-filter').addEventListener('change', (e) => {
+    const status = document.getElementById('receipt-status-filter').value;
+    const search = document.getElementById('receipt-search').value;
+    loadGoodsReceipts(status, e.target.value, search);
+  });
+
+  let receiptSearchTimeout;
+  document.getElementById('receipt-search').addEventListener('input', (e) => {
+    clearTimeout(receiptSearchTimeout);
+    receiptSearchTimeout = setTimeout(() => {
+      const status = document.getElementById('receipt-status-filter').value;
+      const qcStatus = document.getElementById('receipt-qc-filter').value;
+      loadGoodsReceipts(status, qcStatus, e.target.value);
+    }, 300);
+  });
+
+  document.getElementById('refresh-receipts-btn').addEventListener('click', () => {
+    loadGoodsReceipts();
+  });
+
+  // Recalculate all performance button
+  document.getElementById('recalculate-all-performance-btn').addEventListener('click', recalculateAllPerformance);
 
 })();

@@ -1,9 +1,15 @@
 <?php
 // Common helpers for API endpoints
+
+// Disable error display to prevent HTML in JSON responses
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+
 session_start();
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Content-Type: application/json'); // Always return JSON
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
 require_once __DIR__ . '/../config/database.php';
@@ -70,18 +76,27 @@ function admin_block_mutations() {
     }
 }
 
-function log_audit($entity_type, $entity_id, $action, $user_id, $changes = null) {
+function log_audit($entity_type, $entity_id, $action, $user_id, $description = null) {
     try {
         $conn = db_conn();
-        $stmt = $conn->prepare('INSERT INTO audit_logs (entity_type, entity_id, action, user_id, changes_json) VALUES (:etype, :eid, :action, :uid, :changes_json)');
+        $module = $_SESSION['user']['module'] ?? 'system';
+        
+        $stmt = $conn->prepare('
+            INSERT INTO audit_logs 
+            (user_id, module, action, entity_type, entity_id, description) 
+            VALUES (:uid, :module, :action, :etype, :eid, :desc)
+        ');
         $stmt->execute([
-            'etype' => $entity_type,
-            'eid' => $entity_id,
-            'action' => $action,
-            'uid' => $user_id,
-            'changes_json' => $changes
+            ':uid' => $user_id,
+            ':module' => $module,
+            ':action' => $action,
+            ':etype' => $entity_type,
+            ':eid' => $entity_id,
+            ':desc' => $description
         ]);
-    } catch (Exception $e) { /* swallow to not break main op */ }
+    } catch (Exception $e) { 
+        error_log("log_audit error: " . $e->getMessage());
+    }
 }
 
 function notify_module_users($module, $title, $message, $action_url = null, $include_admin = true) {
@@ -95,13 +110,70 @@ function notify_module_users($module, $title, $message, $action_url = null, $inc
         error_log("notify_module_users: module=$module, found " . count($userIds) . " users");
         
         if (!$userIds) return;
-        $ins = $conn->prepare('INSERT INTO notifications (user_id, type, title, message, action_url) VALUES (:uid, :type, :title, :msg, :url)');
+        $ins = $conn->prepare('
+            INSERT INTO notifications 
+            (user_id, module, type, title, message, action_url) 
+            VALUES (:uid, :module, :type, :title, :msg, :url)
+        ');
         foreach ($userIds as $uid) {
-            $ins->execute(['uid' => $uid, 'type' => 'info', 'title' => $title, 'msg' => $message, 'url' => $action_url]);
+            $ins->execute([
+                ':uid' => $uid,
+                ':module' => $module,
+                ':type' => 'info',
+                ':title' => $title,
+                ':msg' => $message,
+                ':url' => $action_url
+            ]);
             error_log("Created notification for user $uid: $title");
         }
     } catch (Exception $e) { 
         error_log("notify_module_users error: " . $e->getMessage());
+    }
+}
+
+// Create notification for specific user
+function create_notification($user_id, $module, $type, $title, $message, $action_url = null, $entity_type = null, $entity_id = null) {
+    try {
+        $conn = db_conn();
+        $stmt = $conn->prepare('
+            INSERT INTO notifications 
+            (user_id, module, type, title, message, action_url, entity_type, entity_id) 
+            VALUES (:uid, :module, :type, :title, :msg, :url, :etype, :eid)
+        ');
+        $stmt->execute([
+            ':uid' => $user_id,
+            ':module' => $module,
+            ':type' => $type,
+            ':title' => $title,
+            ':msg' => $message,
+            ':url' => $action_url,
+            ':etype' => $entity_type,
+            ':eid' => $entity_id
+        ]);
+    } catch (Exception $e) {
+        error_log("create_notification error: " . $e->getMessage());
+    }
+}
+
+// Create role-based notification (broadcast to all users with specific role)
+function create_role_notification($role, $module, $type, $title, $message, $action_url = null) {
+    try {
+        $conn = db_conn();
+        $stmt = $conn->prepare('
+            INSERT INTO notifications 
+            (user_id, role, module, type, title, message, action_url) 
+            VALUES (NULL, :role, :module, :type, :title, :msg, :url)
+        ');
+        $stmt->execute([
+            ':role' => $role,
+            ':module' => $module,
+            ':type' => $type,
+            ':title' => $title,
+            ':msg' => $message,
+            ':url' => $action_url
+        ]);
+    } catch (Exception $e) {
+        error_log("create_role_notification error: " . $e->getMessage());
     }
 }
 

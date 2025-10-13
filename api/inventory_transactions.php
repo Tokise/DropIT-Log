@@ -55,6 +55,22 @@ try {
         $total = $countStmt->fetchColumn();
         
         json_ok(['items' => $rows, 'page' => $page, 'limit' => $limit, 'total' => $total]);
+    } else if ($method === 'POST') {
+        $data = read_json_body();
+        require_params($data, ['product_id','warehouse_id','type','qty']);
+        $stmt = $conn->prepare("INSERT INTO inventory_transactions (product_id, warehouse_id, type, qty, notes, performed_by, created_at) VALUES (:product_id, :warehouse_id, :type, :qty, :notes, :performed_by, NOW())");
+        $stmt->execute([
+            ':product_id' => $data['product_id'],
+            ':warehouse_id' => $data['warehouse_id'],
+            ':type' => $data['type'],
+            ':qty' => $data['qty'],
+            ':notes' => $data['notes'] ?? null,
+            ':performed_by' => $auth['id'],
+        ]);
+        $id = (int)$conn->lastInsertId();
+        // Audit log
+        log_audit('inventory_transaction', $id, 'create', $auth['id'], json_encode($data));
+        json_ok(['id' => $id]);
     } else {
         json_err('Method not allowed', 405);
     }
