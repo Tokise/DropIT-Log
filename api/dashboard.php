@@ -29,7 +29,7 @@ try {
   ];
   $counts['alms'] = [
     'assets' => (int)$conn->query('SELECT COUNT(*) FROM assets')->fetchColumn(),
-    'open_work_orders' => (int)$conn->query("SELECT COUNT(*) FROM work_orders WHERE status IN ('open','scheduled','in_progress')")->fetchColumn()
+    'pending_maintenance' => (int)$conn->query("SELECT COUNT(*) FROM asset_maintenance WHERE status IN ('scheduled','in_progress','overdue')")->fetchColumn()
   ];
   $counts['dtrs'] = [
     'documents' => (int)$conn->query('SELECT COUNT(*) FROM documents')->fetchColumn()

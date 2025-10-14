@@ -184,3 +184,34 @@ window.Api = {
     URL.revokeObjectURL(link.href);
   }
 };
+
+// Load module-specific JavaScript files
+document.addEventListener('DOMContentLoaded', () => {
+  const path = window.location.pathname;
+  
+  // Load AI assistant for all pages
+  if (!document.querySelector('script[src*="ai.js"]')) {
+    const aiScript = document.createElement('script');
+    aiScript.src = 'assets/ai.js';
+    document.head.appendChild(aiScript);
+  }
+  
+  // Load module-specific scripts
+  if (path.includes('plt.php') && !document.querySelector('script[src*="plt.js"]')) {
+    const pltScript = document.createElement('script');
+    pltScript.src = 'assets/plt.js';
+    document.head.appendChild(pltScript);
+  }
+  
+  if (path.includes('alms.php') && !document.querySelector('script[src*="alms.js"]')) {
+    const almsScript = document.createElement('script');
+    almsScript.src = 'assets/alms.js';
+    document.head.appendChild(almsScript);
+  }
+  
+  if (path.includes('dtrs.php') && !document.querySelector('script[src*="dtlrs.js"]')) {
+    const dtlrsScript = document.createElement('script');
+    dtlrsScript.src = 'assets/dtlrs.js';
+    document.head.appendChild(dtlrsScript);
+  }
+});

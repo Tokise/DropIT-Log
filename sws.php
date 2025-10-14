@@ -111,6 +111,11 @@
                 </button>
               </li>
               <li class="nav-item" role="presentation">
+                <button class="nav-link" id="warehouses-tab" data-bs-toggle="pill" data-bs-target="#warehouses" type="button" role="tab">
+                  <i class="fa-solid fa-building me-1"></i>Warehouses
+                </button>
+              </li>
+              <li class="nav-item" role="presentation">
                 <button class="nav-link" id="ai-tools-tab" data-bs-toggle="pill" data-bs-target="#ai-tools" type="button" role="tab">
                   <i class="fa-solid fa-robot me-1"></i>AI Tools
                 </button>
@@ -238,7 +243,7 @@
                           <th>Name</th>
                           <th>Category</th>
                           <th>Price</th>
-                          <th>Reorder Point</th>
+                          <th>Inventory</th>
                           <th>Status</th>
                           <th>Actions</th>
                         </tr>
@@ -323,6 +328,39 @@
                           <td colspan="8" class="text-center text-muted">
                             <div class="spinner-border spinner-border-sm me-2" role="status"></div>
                             Loading shipments...
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <!-- Warehouses Tab -->
+                <div class="tab-pane fade" id="warehouses" role="tabpanel">
+                  <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="mb-0"><i class="fa-solid fa-building me-2"></i>Warehouse Management</h6>
+                    <button class="btn btn-primary btn-sm" onclick="addWarehouse()">
+                      <i class="fa-solid fa-plus"></i> Add Warehouse
+                    </button>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-hover">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Code</th>
+                          <th>Name</th>
+                          <th>Location</th>
+                          <th>Manager</th>
+                          <th>Zones</th>
+                          <th>Products</th>
+                          <th>Total Inventory</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="warehousesTable">
+                        <tr>
+                          <td colspan="8" class="text-center text-muted">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                            Loading warehouses...
                           </td>
                         </tr>
                       </tbody>
@@ -423,6 +461,7 @@
       loadProducts();
       loadMovements();
       loadWarehouses();
+      loadWarehousesList();
     });
 
     let currentZoneId = null;
@@ -491,26 +530,31 @@
         return;
       }
 
-      // Render location cards horizontally
+      // Render location cards horizontally (now showing aisles)
       cardsDiv.innerHTML = locations.map(loc => {
         const utilization = loc.capacity_units > 0 ? Math.round((loc.current_units / loc.capacity_units) * 100) : 0;
         const statusClass = utilization > 80 ? 'danger' : utilization > 50 ? 'warning' : 'success';
+        
+        // Use aisle_code if available, fallback to location_code for backward compatibility
+        const locationCode = loc.aisle_code || loc.location_code || 'Unknown';
+        const locationName = loc.aisle_name || loc.location_name || 'Storage Aisle';
         
         return `
           <div class="col-md-3">
             <div class="card h-100 border-${statusClass}">
               <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                  <h6 class="mb-0">${loc.location_code}</h6>
+                  <h6 class="mb-0">${locationCode}</h6>
                   <button class="btn btn-sm btn-outline-danger" onclick="deleteLocation(${loc.id})" title="Delete">
                     <i class="fa-solid fa-trash"></i>
                   </button>
                 </div>
-                <p class="text-muted small mb-2">${loc.location_name || 'Storage Location'}</p>
+                <p class="text-muted small mb-2">${locationName}</p>
                 <div class="progress mb-2" style="height: 8px;">
                   <div class="progress-bar bg-${statusClass}" style="width: ${utilization}%"></div>
                 </div>
-                <small class="text-muted">${loc.current_units} / ${loc.capacity_units} units (${utilization}%)</small>
+                <small class="text-muted">${loc.current_units || 0} / ${loc.capacity_units || 100} units (${utilization}%)</small>
+                ${loc.bin_count ? `<br><small class="text-info">${loc.bin_count} bins</small>` : ''}
               </div>
             </div>
           </div>
@@ -544,8 +588,9 @@
       let html = '<div class="row">';
       zones.forEach(zone => {
         const locations = zone.locations || [];
-        const totalCapacity = locations.reduce((sum, loc) => sum + (loc.capacity_units || 0), 0);
-        const totalUsed = locations.reduce((sum, loc) => sum + (loc.current_units || 0), 0);
+        // Use the zone's total values if available, otherwise calculate from locations
+        const totalCapacity = zone.total_capacity_units || locations.reduce((sum, loc) => sum + (loc.capacity_units || 0), 0);
+        const totalUsed = zone.total_current_units || locations.reduce((sum, loc) => sum + (loc.current_units || 0), 0);
         const utilization = totalCapacity > 0 ? Math.round((totalUsed / totalCapacity) * 100) : 0;
         
         html += `
@@ -625,51 +670,67 @@
       }
     }
 
-    // Add location to zone
+    // Add aisle to zone (updated for new warehouse structure)
     async function addLocation(zoneId) {
       const { value: formValues } = await Swal.fire({
-        title: 'Add Storage Location',
+        title: 'Add New Aisle',
         html: `
           <div class="mb-3 text-start">
-            <label class="form-label">Location Code</label>
-            <input id="loc-code" class="swal2-input" placeholder="e.g., A01, A02">
+            <label class="form-label">Aisle Code</label>
+            <input id="aisle-code" class="swal2-input" placeholder="e.g., A04, A05">
           </div>
           <div class="mb-3 text-start">
-            <label class="form-label">Location Name (Optional)</label>
-            <input id="loc-name" class="swal2-input" placeholder="e.g., Shelf 1">
+            <label class="form-label">Aisle Name</label>
+            <input id="aisle-name" class="swal2-input" placeholder="e.g., Electronics Aisle">
           </div>
           <div class="mb-3 text-start">
-            <label class="form-label">Capacity (units)</label>
-            <input id="loc-capacity" type="number" class="swal2-input" value="100">
+            <label class="form-label">Number of Racks</label>
+            <input id="rack-count" type="number" class="swal2-input" value="2" min="1" max="10">
+          </div>
+          <div class="mb-3 text-start">
+            <label class="form-label">Bins per Rack</label>
+            <input id="bins-per-rack" type="number" class="swal2-input" value="12" min="1" max="50">
+          </div>
+          <div class="mb-3 text-start">
+            <label class="form-label">Bin Capacity (units each)</label>
+            <input id="bin-capacity" type="number" class="swal2-input" value="50" min="1">
           </div>
         `,
         focusConfirm: false,
         showCancelButton: true,
-        confirmButtonText: 'Create Location',
+        confirmButtonText: 'Create Aisle',
+        width: '500px',
         preConfirm: () => {
+          const aisleCode = document.getElementById('aisle-code').value;
+          const aisleName = document.getElementById('aisle-name').value;
+          const rackCount = parseInt(document.getElementById('rack-count').value);
+          const binsPerRack = parseInt(document.getElementById('bins-per-rack').value);
+          const binCapacity = parseInt(document.getElementById('bin-capacity').value);
+          
+          if (!aisleCode || !aisleName) {
+            Swal.showValidationMessage('Aisle code and name are required');
+            return false;
+          }
+          
           return {
             zone_id: zoneId,
-            location_code: document.getElementById('loc-code').value,
-            location_name: document.getElementById('loc-name').value,
-            capacity_units: parseInt(document.getElementById('loc-capacity').value)
+            aisle_code: aisleCode.toUpperCase(),
+            aisle_name: aisleName,
+            rack_count: rackCount,
+            bins_per_rack: binsPerRack,
+            bin_capacity: binCapacity
           };
         }
       });
 
       if (formValues) {
         try {
-          const response = await fetch('api/sws_locations.php?action=location', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(formValues)
-          });
-          const data = await response.json();
-          
-          if (data.ok) {
-            Swal.fire('Success!', 'Location created successfully', 'success');
+          const response = await Api.send('api/sws_locations.php?action=create_aisle', 'POST', formValues);
+          if (response.ok) {
+            Swal.fire('Success!', `Aisle created with ${formValues.rack_count} racks and ${formValues.rack_count * formValues.bins_per_rack} bins`, 'success');
             loadLocationTree();
           } else {
-            throw new Error(data.error);
+            throw new Error(response.error || 'Failed to create aisle');
           }
         } catch (error) {
           Swal.fire('Error', error.message, 'error');
@@ -878,7 +939,8 @@
             <td>${item.product_name}</td>
             <td><code>${item.sku}</code></td>
             <td>
-              <small>${item.zone_code}-${item.aisle_code}-${item.rack_code}-${item.bin_code}</small>
+              <small>${item.warehouse_name || 'Main Warehouse'}</small>
+              ${item.locations_text ? `<br><small class="text-muted">${item.locations_text}</small>` : ''}
             </td>
             <td><span class="badge bg-primary">${item.quantity}</span></td>
             <td><span class="badge bg-warning">${item.reserved_quantity || 0}</span></td>
@@ -887,21 +949,17 @@
             <td>${item.expiry_date || '-'}</td>
             <td>
               <div class="btn-group btn-group-sm">
-                <button class="btn btn-outline-primary" onclick="transferInventory(${item.id})">
+                <button class="btn btn-outline-primary" onclick="transferInventory(${item.id})" title="Transfer">
                   <i class="fa-solid fa-arrows-rotate"></i>
                 </button>
-                <button class="btn btn-outline-info" onclick="adjustInventory(${item.id})">
+                <button class="btn btn-outline-info" onclick="adjustInventory(${item.id})" title="Adjust">
                   <i class="fa-solid fa-edit"></i>
                 </button>
-                <button class="btn btn-outline-secondary" title="Show Barcode" onclick="showProductBarcode('${item.barcode}')">
-                  <i class="fa-solid fa-barcode"></i>
-                </button>
-                <button class="btn btn-outline-info" title="Print Barcode" onclick="printProductBarcode('${item.barcode}')">
-                  <i class="fa-solid fa-print"></i>
-                </button>
-                <button class="btn btn-outline-success" title="Scan Barcode" onclick="scanProductBarcode('${item.barcode}')">
-                  <i class="fa-solid fa-qrcode"></i>
-                </button>
+                ${item.barcode ? `
+                  <button class="btn btn-outline-secondary" title="Show Barcode" onclick="showProductBarcode('${item.barcode}')">
+                    <i class="fa-solid fa-barcode"></i>
+                  </button>
+                ` : ''}
               </div>
             </td>
           </tr>
@@ -930,25 +988,39 @@
             <td>${product.name}</td>
             <td>${product.category_name || '-'}</td>
             <td>₱${parseFloat(product.unit_price || 0).toFixed(2)}</td>
-            <td><span class="badge bg-info">${product.reorder_point || 0}</span></td>
+            <td>
+              <span class="badge ${product.total_inventory > 0 ? 'bg-success' : 'bg-warning'}">
+                ${product.total_inventory || 0} units
+              </span>
+              ${product.warehouse_count > 1 ? `<small class="text-muted d-block">${product.warehouse_count} warehouses</small>` : ''}
+            </td>
             <td>
               <span class="badge ${product.is_active ? 'bg-success' : 'bg-secondary'}">
                 ${product.is_active ? 'Active' : 'Inactive'}
               </span>
             </td>
             <td>
-              <div class="btn-group btn-group-sm">
-                <button class="btn btn-outline-primary" onclick="editProduct(${product.id})">
+              <div class="btn-group btn-group-sm" role="group">
+                ${!product.barcode || product.barcode === 'null' ? `
+                  <button type="button" class="btn btn-outline-warning" title="Generate Barcode" onclick="generateBarcode(${product.id})">
+                    <i class="fa-solid fa-qrcode"></i>
+                  </button>
+                ` : `
+                  <button type="button" class="btn btn-outline-secondary" title="Show Barcode" onclick="showProductBarcode('${product.barcode}')">
+                    <i class="fa-solid fa-barcode"></i>
+                  </button>
+                `}
+                <button type="button" class="btn btn-outline-success" title="Move to Inventory" onclick="moveToInventory(${product.id})">
+                  <i class="fa-solid fa-warehouse"></i>
+                </button>
+                <button type="button" class="btn btn-outline-info" title="AI Analysis" onclick="aiAnalyzeProduct(${product.id})">
+                  <i class="fa-solid fa-robot"></i>
+                </button>
+                <button type="button" class="btn btn-outline-primary" title="Edit Product" onclick="editProduct(${product.id})">
                   <i class="fa-solid fa-edit"></i>
                 </button>
-                <button class="btn btn-outline-danger" onclick="deleteProduct(${product.id})">
+                <button type="button" class="btn btn-outline-danger" title="Delete Product" onclick="deleteProduct(${product.id})">
                   <i class="fa-solid fa-trash"></i>
-                </button>
-                <button class="btn btn-outline-secondary" title="Show Barcode" onclick="showProductBarcode('${product.barcode}')">
-                  <i class="fa-solid fa-barcode"></i>
-                </button>
-                <button class="btn btn-outline-info" title="Print Barcode" onclick="printProductBarcode('${product.barcode}')">
-                  <i class="fa-solid fa-print"></i>
                 </button>
               </div>
             </td>
@@ -1078,15 +1150,141 @@
     }
 
     function addProduct() {
-      console.log('Add product');
+      Swal.fire({
+        title: 'Add New Product',
+        html: `
+          <div class="mb-3">
+            <label class="form-label">Product Name</label>
+            <input id="swal-name" class="swal2-input" placeholder="Product Name" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">SKU</label>
+            <input id="swal-sku" class="swal2-input" placeholder="SKU" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Unit Price</label>
+            <input id="swal-price" class="swal2-input" type="number" step="0.01" placeholder="0.00" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description</label>
+            <textarea id="swal-description" class="swal2-textarea" placeholder="Product description"></textarea>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Create Product',
+        preConfirm: () => {
+          const name = document.getElementById('swal-name').value;
+          const sku = document.getElementById('swal-sku').value;
+          const price = document.getElementById('swal-price').value;
+          
+          if (!name || !sku || !price) {
+            Swal.showValidationMessage('Please fill in all required fields');
+            return false;
+          }
+          
+          return {
+            name: name,
+            sku: sku,
+            unit_price: parseFloat(price),
+            description: document.getElementById('swal-description').value
+          };
+        }
+      }).then(async (result) => {
+        if (result.isConfirmed) {
+          try {
+            const response = await Api.send('api/products.php', 'POST', result.value);
+            if (response.ok) {
+              Swal.fire('Success!', 'Product created successfully', 'success');
+              loadProducts();
+            } else {
+              throw new Error(response.error || 'Failed to create product');
+            }
+          } catch (error) {
+            Swal.fire('Error', error.message, 'error');
+          }
+        }
+      });
     }
 
-    function editProduct(id) {
-      console.log('Edit product:', id);
+    async function editProduct(id) {
+      try {
+        // Get product details first
+        const response = await Api.get(`api/products.php?id=${id}`);
+        if (!response.ok) throw new Error('Product not found');
+        
+        const product = response.data;
+        
+        const { value: formValues } = await Swal.fire({
+          title: 'Edit Product',
+          html: `
+            <div class="mb-3">
+              <label class="form-label">Product Name</label>
+              <input id="swal-name" class="swal2-input" value="${product.name}" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">SKU</label>
+              <input id="swal-sku" class="swal2-input" value="${product.sku}" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Unit Price</label>
+              <input id="swal-price" class="swal2-input" type="number" step="0.01" value="${product.unit_price}" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Description</label>
+              <textarea id="swal-description" class="swal2-textarea">${product.description || ''}</textarea>
+            </div>
+          `,
+          focusConfirm: false,
+          showCancelButton: true,
+          confirmButtonText: 'Update Product',
+          preConfirm: () => {
+            return {
+              name: document.getElementById('swal-name').value,
+              sku: document.getElementById('swal-sku').value,
+              unit_price: parseFloat(document.getElementById('swal-price').value),
+              description: document.getElementById('swal-description').value
+            };
+          }
+        });
+
+        if (formValues) {
+          const updateResponse = await Api.send(`api/products.php?id=${id}`, 'PUT', formValues);
+          if (updateResponse.ok) {
+            Swal.fire('Success!', 'Product updated successfully', 'success');
+            loadProducts();
+          } else {
+            throw new Error(updateResponse.error || 'Failed to update product');
+          }
+        }
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
+      }
     }
 
-    function deleteProduct(id) {
-      console.log('Delete product:', id);
+    async function deleteProduct(id) {
+      const result = await Swal.fire({
+        title: 'Delete Product?',
+        text: 'This action cannot be undone!',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#dc3545',
+        confirmButtonText: 'Yes, delete it!'
+      });
+
+      if (result.isConfirmed) {
+        try {
+          const response = await Api.send(`api/products.php?id=${id}`, 'DELETE');
+          if (response.ok) {
+            Swal.fire('Deleted!', 'Product has been deleted', 'success');
+            loadProducts();
+          } else {
+            throw new Error(response.error || 'Failed to delete product');
+          }
+        } catch (error) {
+          Swal.fire('Error', error.message, 'error');
+        }
+      }
     }
 
     function addMovement() {
@@ -1094,55 +1292,81 @@
     }
 
     async function transferInventory(inventoryId) {
-      // Get inventory details first
-      const { value: formValues } = await Swal.fire({
-        title: 'Transfer Stock',
-        html: `
-          <div class="mb-3">
-            <label class="form-label">From Bin ID</label>
-            <input id="swal-from-bin" class="swal2-input" type="number" placeholder="From Bin ID" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">To Bin ID</label>
-            <input id="swal-to-bin" class="swal2-input" type="number" placeholder="To Bin ID" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">Quantity</label>
-            <input id="swal-quantity" class="swal2-input" type="number" placeholder="Quantity" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">Reason</label>
-            <select id="swal-reason" class="swal2-select">
-              <option value="relocation">Relocation</option>
-              <option value="optimization">Optimization</option>
-              <option value="consolidation">Consolidation</option>
-            </select>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">Notes</label>
-            <textarea id="swal-notes" class="swal2-textarea" placeholder="Notes"></textarea>
-          </div>
-        `,
-        focusConfirm: false,
-        showCancelButton: true,
-        preConfirm: () => {
-          return {
-            from_bin_id: parseInt(document.getElementById('swal-from-bin').value),
-            to_bin_id: parseInt(document.getElementById('swal-to-bin').value),
-            quantity: parseInt(document.getElementById('swal-quantity').value),
-            reason_code: document.getElementById('swal-reason').value,
-            notes: document.getElementById('swal-notes').value
-          };
-        }
-      });
+      try {
+        // Get available bins first
+        const binsResponse = await Api.get('api/transfer_stock.php?action=bins');
+        const bins = binsResponse.data.bins || [];
+        
+        const binOptions = bins.map(bin => 
+          `<option value="${bin.id}">${bin.location_code} - ${bin.bin_name} (${bin.available_units}/${bin.capacity_units} available)</option>`
+        ).join('');
+        
+        const { value: formValues } = await Swal.fire({
+          title: 'Transfer Stock',
+          html: `
+            <div class="mb-3 text-start">
+              <label class="form-label">From Bin</label>
+              <select id="swal-from-bin" class="swal2-select" required>
+                <option value="">-- Select Source Bin --</option>
+                ${binOptions}
+              </select>
+            </div>
+            <div class="mb-3 text-start">
+              <label class="form-label">To Bin</label>
+              <select id="swal-to-bin" class="swal2-select" required>
+                <option value="">-- Select Destination Bin --</option>
+                ${binOptions}
+              </select>
+            </div>
+            <div class="mb-3 text-start">
+              <label class="form-label">Quantity</label>
+              <input id="swal-quantity" class="swal2-input" type="number" placeholder="Quantity" min="1" required>
+            </div>
+            <div class="mb-3 text-start">
+              <label class="form-label">Reason</label>
+              <select id="swal-reason" class="swal2-select">
+                <option value="relocation">Relocation</option>
+                <option value="optimization">Optimization</option>
+                <option value="consolidation">Consolidation</option>
+                <option value="maintenance">Maintenance</option>
+              </select>
+            </div>
+            <div class="mb-3 text-start">
+              <label class="form-label">Notes</label>
+              <textarea id="swal-notes" class="swal2-textarea" placeholder="Optional notes"></textarea>
+            </div>
+          `,
+          focusConfirm: false,
+          showCancelButton: true,
+          confirmButtonText: 'Transfer Stock',
+          width: '600px',
+          preConfirm: () => {
+            const fromBin = document.getElementById('swal-from-bin').value;
+            const toBin = document.getElementById('swal-to-bin').value;
+            const quantity = document.getElementById('swal-quantity').value;
+            
+            if (!fromBin || !toBin || !quantity) {
+              Swal.showValidationMessage('Please fill in all required fields');
+              return false;
+            }
+            
+            if (fromBin === toBin) {
+              Swal.showValidationMessage('Source and destination bins must be different');
+              return false;
+            }
+            
+            return {
+              from_bin_id: parseInt(fromBin),
+              to_bin_id: parseInt(toBin),
+              quantity: parseInt(quantity),
+              reason_code: document.getElementById('swal-reason').value,
+              notes: document.getElementById('swal-notes').value
+            };
+          }
+        });
 
-      if (formValues) {
-        try {
-          const response = await Api.send('api/sws_movements.php?action=transfer', 'POST', {
-            product_id: inventoryId,
-            warehouse_id: 1,
-            ...formValues
-          });
+        if (formValues) {
+          const response = await Api.send('api/transfer_stock.php', 'POST', formValues);
 
           if (response.ok) {
             Swal.fire('Success!', 'Stock transferred successfully', 'success');
@@ -1151,9 +1375,9 @@
           } else {
             throw new Error(response.error || 'Transfer failed');
           }
-        } catch (error) {
-          Swal.fire('Error', error.message, 'error');
         }
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
       }
     }
 
@@ -1358,6 +1582,439 @@
         });
       }
     });
+
+    // New product action functions
+    async function generateBarcode(productId) {
+      try {
+        const response = await Api.send('api/product_actions.php', 'POST', {
+          action: 'generate_barcode',
+          product_id: productId
+        });
+
+        if (response.ok) {
+          Swal.fire({
+            title: 'Barcode Generated!',
+            html: `
+              <p>Barcode: <strong>${response.data.barcode}</strong></p>
+              ${response.data.barcode_image ? `<img src="data:image/png;base64,${response.data.barcode_image}" alt="Barcode" class="img-fluid">` : ''}
+            `,
+            icon: 'success'
+          });
+          loadProducts(); // Refresh the products list
+        } else {
+          throw new Error(response.error || 'Failed to generate barcode');
+        }
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
+      }
+    }
+
+    async function moveToInventory(productId) {
+      const { value: formValues } = await Swal.fire({
+        title: 'Move Product to Inventory',
+        html: `
+          <div class="mb-3">
+            <label class="form-label">Quantity</label>
+            <input id="swal-quantity" class="swal2-input" type="number" placeholder="Quantity" min="1" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Warehouse</label>
+            <select id="swal-warehouse" class="swal2-select">
+              <option value="1">Main Warehouse</option>
+            </select>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="swal-use-ai" checked>
+            <label class="form-check-label" for="swal-use-ai">
+              Use AI to suggest optimal location
+            </label>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        preConfirm: () => {
+          const quantity = parseInt(document.getElementById('swal-quantity').value);
+          if (!quantity || quantity <= 0) {
+            Swal.showValidationMessage('Please enter a valid quantity');
+            return false;
+          }
+          return {
+            quantity: quantity,
+            warehouse_id: parseInt(document.getElementById('swal-warehouse').value),
+            use_ai: document.getElementById('swal-use-ai').checked
+          };
+        }
+      });
+
+      if (formValues) {
+        try {
+          const response = await Api.send('api/product_actions.php', 'POST', {
+            action: 'move_to_inventory',
+            product_id: productId,
+            ...formValues
+          });
+
+          if (response.ok) {
+            Swal.fire({
+              title: 'Success!',
+              html: `
+                <p>Product moved to inventory successfully!</p>
+                <p><strong>Quantity added:</strong> ${response.data.quantity_added}</p>
+                ${response.data.ai_location ? `<p><strong>AI Location:</strong> ${response.data.ai_location}</p>` : ''}
+              `,
+              icon: 'success'
+            });
+            loadProducts();
+            loadInventory();
+          } else {
+            throw new Error(response.error || 'Failed to move to inventory');
+          }
+        } catch (error) {
+          Swal.fire('Error', error.message, 'error');
+        }
+      }
+    }
+
+    async function aiAnalyzeProduct(productId) {
+      try {
+        // Show loading
+        Swal.fire({
+          title: 'AI Analysis in Progress...',
+          html: 'Analyzing product with AI...',
+          allowOutsideClick: false,
+          didOpen: () => {
+            Swal.showLoading();
+          }
+        });
+
+        const response = await Api.send('api/product_actions.php', 'POST', {
+          action: 'ai_analyze_product',
+          product_id: productId
+        });
+
+        if (response.ok) {
+          const product = response.data.product;
+          const analysis = response.data.ai_analysis;
+          
+          let analysisHtml = `
+            <div class="text-start">
+              <h6>Product: ${product.name}</h6>
+              <p><strong>SKU:</strong> ${product.sku}</p>
+              <p><strong>Current Inventory:</strong> ${product.total_inventory} units</p>
+              <p><strong>Warehouses:</strong> ${product.warehouse_count}</p>
+              <hr>
+          `;
+
+          if (analysis.demand_forecast) {
+            analysisHtml += `
+              <h6>📈 Demand Forecast (30 days)</h6>
+              <p><strong>Predicted Demand:</strong> ${analysis.demand_forecast.predicted_demand} units</p>
+              <p><strong>Confidence:</strong> ${(analysis.demand_forecast.confidence * 100).toFixed(1)}%</p>
+              <p><strong>Days of Stock:</strong> ${analysis.days_of_stock} days</p>
+              <p><strong>Reorder Recommended:</strong> ${analysis.demand_forecast.reorder_recommended ? 'Yes' : 'No'}</p>
+              ${analysis.demand_forecast.reorder_quantity ? `<p><strong>Suggested Reorder:</strong> ${analysis.demand_forecast.reorder_quantity} units</p>` : ''}
+              <hr>
+            `;
+          }
+
+          if (analysis.barcode_context) {
+            analysisHtml += `
+              <h6>🏷️ Barcode Analysis</h6>
+              <p><strong>Status:</strong> <span class="badge bg-${analysis.barcode_context.status === 'ok' ? 'success' : analysis.barcode_context.status === 'warning' ? 'warning' : 'danger'}">${analysis.barcode_context.status.toUpperCase()}</span></p>
+              <p><strong>Message:</strong> ${analysis.barcode_context.message}</p>
+              ${analysis.barcode_context.suggestions.length > 0 ? `
+                <p><strong>Suggestions:</strong></p>
+                <ul>
+                  ${analysis.barcode_context.suggestions.map(s => `<li>${s}</li>`).join('')}
+                </ul>
+              ` : ''}
+            `;
+          }
+
+          analysisHtml += '</div>';
+
+          Swal.fire({
+            title: '🤖 AI Analysis Results',
+            html: analysisHtml,
+            icon: 'info',
+            width: '600px'
+          });
+        } else {
+          throw new Error(response.error || 'AI analysis failed');
+        }
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
+      }
+    }
+
+    // Warehouse Management Functions
+    async function loadWarehousesList() {
+      try {
+        const response = await Api.get('api/warehouse_management.php');
+        const warehouses = response.data.items || [];
+        
+        const tbody = document.getElementById('warehousesTable');
+        if (warehouses.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No warehouses found</td></tr>';
+          return;
+        }
+        
+        tbody.innerHTML = warehouses.map(warehouse => `
+          <tr>
+            <td><code>${warehouse.code}</code></td>
+            <td>${warehouse.name}</td>
+            <td>
+              ${warehouse.city || '-'}
+              ${warehouse.address ? `<br><small class="text-muted">${warehouse.address}</small>` : ''}
+            </td>
+            <td>${warehouse.manager_name || '-'}</td>
+            <td><span class="badge bg-info">${warehouse.zone_count || 0} zones</span></td>
+            <td><span class="badge bg-primary">${warehouse.product_count || 0} products</span></td>
+            <td><span class="badge bg-success">${warehouse.total_inventory || 0} units</span></td>
+            <td>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-primary" onclick="editWarehouse(${warehouse.id})" title="Edit">
+                  <i class="fa-solid fa-edit"></i>
+                </button>
+                <button class="btn btn-outline-info" onclick="viewWarehouseDetails(${warehouse.id})" title="View Details">
+                  <i class="fa-solid fa-eye"></i>
+                </button>
+                <button class="btn btn-outline-danger" onclick="deleteWarehouse(${warehouse.id})" title="Delete">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        console.error('Error loading warehouses:', error);
+        document.getElementById('warehousesTable').innerHTML = '<tr><td colspan="8" class="text-center text-danger">Error loading warehouses</td></tr>';
+      }
+    }
+
+    async function addWarehouse() {
+      const { value: formValues } = await Swal.fire({
+        title: 'Add New Warehouse',
+        html: `
+          <div class="row">
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">Warehouse Code *</label>
+                <input id="swal-code" class="swal2-input" placeholder="e.g., WH001" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Warehouse Name *</label>
+                <input id="swal-name" class="swal2-input" placeholder="Main Warehouse" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Manager Name</label>
+                <input id="swal-manager" class="swal2-input" placeholder="Manager Name">
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input id="swal-phone" class="swal2-input" placeholder="Phone Number">
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="mb-3">
+                <label class="form-label">Address</label>
+                <textarea id="swal-address" class="swal2-textarea" placeholder="Street Address"></textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">City</label>
+                <input id="swal-city" class="swal2-input" placeholder="City">
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input id="swal-email" class="swal2-input" type="email" placeholder="warehouse@company.com">
+              </div>
+            </div>
+          </div>
+          <div class="form-check mt-3">
+            <input class="form-check-input" type="checkbox" id="swal-default-zones" checked>
+            <label class="form-check-label" for="swal-default-zones">
+              Create default zones (Receiving, Storage, Packing, Shipping)
+            </label>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Create Warehouse',
+        width: '800px',
+        preConfirm: () => {
+          const code = document.getElementById('swal-code').value;
+          const name = document.getElementById('swal-name').value;
+          
+          if (!code || !name) {
+            Swal.showValidationMessage('Code and Name are required');
+            return false;
+          }
+          
+          return {
+            code: code.toUpperCase(),
+            name: name,
+            manager_name: document.getElementById('swal-manager').value,
+            phone: document.getElementById('swal-phone').value,
+            address: document.getElementById('swal-address').value,
+            city: document.getElementById('swal-city').value,
+            email: document.getElementById('swal-email').value,
+            create_default_zones: document.getElementById('swal-default-zones').checked
+          };
+        }
+      });
+
+      if (formValues) {
+        try {
+          const response = await Api.send('api/warehouse_management.php', 'POST', formValues);
+          if (response.ok) {
+            Swal.fire('Success!', 'Warehouse created successfully', 'success');
+            loadWarehousesList();
+            loadWarehouses(); // Refresh warehouse filter dropdown
+          } else {
+            throw new Error(response.error || 'Failed to create warehouse');
+          }
+        } catch (error) {
+          Swal.fire('Error', error.message, 'error');
+        }
+      }
+    }
+
+    async function editWarehouse(id) {
+      try {
+        // Get warehouse details first
+        const response = await Api.get(`api/warehouses.php?id=${id}`);
+        if (!response.ok) throw new Error('Warehouse not found');
+        
+        const warehouse = response.data;
+        
+        const { value: formValues } = await Swal.fire({
+          title: 'Edit Warehouse',
+          html: `
+            <div class="row">
+              <div class="col-md-6">
+                <div class="mb-3">
+                  <label class="form-label">Warehouse Code</label>
+                  <input id="swal-code" class="swal2-input" value="${warehouse.code}" required>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Warehouse Name</label>
+                  <input id="swal-name" class="swal2-input" value="${warehouse.name}" required>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Manager Name</label>
+                  <input id="swal-manager" class="swal2-input" value="${warehouse.manager_name || ''}">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Phone</label>
+                  <input id="swal-phone" class="swal2-input" value="${warehouse.phone || ''}">
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="mb-3">
+                  <label class="form-label">Address</label>
+                  <textarea id="swal-address" class="swal2-textarea">${warehouse.address || ''}</textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">City</label>
+                  <input id="swal-city" class="swal2-input" value="${warehouse.city || ''}">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Email</label>
+                  <input id="swal-email" class="swal2-input" value="${warehouse.email || ''}">
+                </div>
+              </div>
+            </div>
+          `,
+          focusConfirm: false,
+          showCancelButton: true,
+          confirmButtonText: 'Update Warehouse',
+          width: '800px',
+          preConfirm: () => {
+            return {
+              code: document.getElementById('swal-code').value.toUpperCase(),
+              name: document.getElementById('swal-name').value,
+              manager_name: document.getElementById('swal-manager').value,
+              phone: document.getElementById('swal-phone').value,
+              address: document.getElementById('swal-address').value,
+              city: document.getElementById('swal-city').value,
+              email: document.getElementById('swal-email').value
+            };
+          }
+        });
+
+        if (formValues) {
+          const updateResponse = await Api.send(`api/warehouse_management.php?id=${id}`, 'PUT', formValues);
+          if (updateResponse.ok) {
+            Swal.fire('Success!', 'Warehouse updated successfully', 'success');
+            loadWarehousesList();
+          } else {
+            throw new Error(updateResponse.error || 'Failed to update warehouse');
+          }
+        }
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
+      }
+    }
+
+    async function deleteWarehouse(id) {
+      const result = await Swal.fire({
+        title: 'Delete Warehouse?',
+        text: 'This action cannot be undone! Make sure the warehouse has no inventory.',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#dc3545',
+        confirmButtonText: 'Yes, delete it!'
+      });
+
+      if (result.isConfirmed) {
+        try {
+          const response = await Api.send(`api/warehouse_management.php?id=${id}`, 'DELETE');
+          if (response.ok) {
+            Swal.fire('Deleted!', 'Warehouse has been deleted', 'success');
+            loadWarehousesList();
+          } else {
+            throw new Error(response.error || 'Failed to delete warehouse');
+          }
+        } catch (error) {
+          Swal.fire('Error', error.message, 'error');
+        }
+      }
+    }
+
+    async function viewWarehouseDetails(id) {
+      try {
+        const response = await Api.get(`api/warehouses.php?id=${id}`);
+        if (!response.ok) throw new Error('Warehouse not found');
+        
+        const warehouse = response.data;
+        
+        Swal.fire({
+          title: `${warehouse.name} (${warehouse.code})`,
+          html: `
+            <div class="text-start">
+              <h6>Contact Information</h6>
+              <p><strong>Manager:</strong> ${warehouse.manager_name || 'Not assigned'}</p>
+              <p><strong>Phone:</strong> ${warehouse.phone || 'Not provided'}</p>
+              <p><strong>Email:</strong> ${warehouse.email || 'Not provided'}</p>
+              
+              <h6>Address</h6>
+              <p>${warehouse.address || 'No address provided'}</p>
+              <p>${warehouse.city || 'No city provided'}</p>
+              
+              <h6>Statistics</h6>
+              <p><strong>Zones:</strong> ${warehouse.zone_count || 0}</p>
+              <p><strong>Products:</strong> ${warehouse.product_count || 0}</p>
+              <p><strong>Total Inventory:</strong> ${warehouse.total_inventory || 0} units</p>
+              <p><strong>Created:</strong> ${new Date(warehouse.created_at).toLocaleDateString()}</p>
+            </div>
+          `,
+          icon: 'info',
+          width: '500px'
+        });
+      } catch (error) {
+        Swal.fire('Error', error.message, 'error');
+      }
+    }
   </script>
 </body>
 </html>

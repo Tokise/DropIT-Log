@@ -225,26 +225,77 @@ try {
                 if ($useSupplierProducts) {
                     // New way: Using supplier products
                     $ins = $conn->prepare("INSERT INTO po_items (po_id, supplier_product_id, product_name, quantity, unit_price, total_price) VALUES (:po_id, :supplier_product_id, :product_name, :quantity, :unit_price, :total_price)");
+                    $legacyIns = $conn->prepare("INSERT INTO purchase_order_items (po_id, product_id, quantity, unit_price, received_quantity) VALUES (:po_id, :product_id, :quantity, :unit_price, 0)");
+                    
                     foreach ($items as $it) {
                         if (!isset($it['supplier_product_id'], $it['quantity'], $it['unit_price'])) {
                             $conn->rollBack();
                             json_err('Each item requires supplier_product_id, quantity, unit_price', 422);
                         }
                         
-                        // Get product name from supplier_products_catalog
-                        $spStmt = $conn->prepare("SELECT product_name FROM supplier_products_catalog WHERE id = :id");
+                        // Get product info from supplier_products_catalog
+                        $spStmt = $conn->prepare("
+                            SELECT product_name, product_code, unit_price, weight_kg, dimensions_cm, barcode, category
+                            FROM supplier_products_catalog 
+                            WHERE id = :id
+                        ");
                         $spStmt->execute([':id' => $it['supplier_product_id']]);
-                        $productName = $spStmt->fetchColumn();
+                        $supplierProduct = $spStmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        if (!$supplierProduct) {
+                            $conn->rollBack();
+                            json_err('Supplier product not found: ' . $it['supplier_product_id'], 404);
+                        }
                         
                         $totalPrice = (float)$it['quantity'] * (float)$it['unit_price'];
                         
+                        // Insert into new po_items table
                         $ins->execute([
                             ':po_id' => $poId,
                             ':supplier_product_id' => (int)$it['supplier_product_id'],
-                            ':product_name' => $productName,
+                            ':product_name' => $supplierProduct['product_name'],
                             ':quantity' => (float)$it['quantity'],
                             ':unit_price' => (float)$it['unit_price'],
                             ':total_price' => $totalPrice
+                        ]);
+                        $poItemId = (int)$conn->lastInsertId();
+                        
+                        // Create or find corresponding product in main products table
+                        $sku = $supplierProduct['product_code'] ?: 'AUTO-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+                        
+                        // Check if product already exists by SKU
+                        $existingStmt = $conn->prepare("SELECT id FROM products WHERE sku = :sku");
+                        $existingStmt->execute([':sku' => $sku]);
+                        $existingProductId = $existingStmt->fetchColumn();
+                        
+                        if (!$existingProductId) {
+                            // Create new product
+                            $productStmt = $conn->prepare("
+                                INSERT INTO products 
+                                (sku, name, description, unit_price, weight_kg, dimensions_cm, barcode, is_active, created_at, updated_at)
+                                VALUES 
+                                (:sku, :name, :description, :unit_price, :weight_kg, :dimensions_cm, :barcode, 1, NOW(), NOW())
+                            ");
+                            $productStmt->execute([
+                                ':sku' => $sku,
+                                ':name' => $supplierProduct['product_name'],
+                                ':description' => "Created from PO #{$poNumber}" . ($supplierProduct['category'] ? " - Category: " . $supplierProduct['category'] : ''),
+                                ':unit_price' => $supplierProduct['unit_price'] ?: $it['unit_price'],
+                                ':weight_kg' => $supplierProduct['weight_kg'],
+                                ':dimensions_cm' => $supplierProduct['dimensions_cm'],
+                                ':barcode' => $supplierProduct['barcode']
+                            ]);
+                            $productId = (int)$conn->lastInsertId();
+                        } else {
+                            $productId = $existingProductId;
+                        }
+                        
+                        // Insert into legacy purchase_order_items table for compatibility
+                        $legacyIns->execute([
+                            ':po_id' => $poId,
+                            ':product_id' => $productId,
+                            ':quantity' => (float)$it['quantity'],
+                            ':unit_price' => (float)$it['unit_price']
                         ]);
                     }
                 } else {
@@ -307,6 +358,72 @@ try {
                     // Find product and warehouse
                     $row = $conn->query("SELECT poi.product_id, po.warehouse_id FROM purchase_order_items poi JOIN purchase_orders po ON poi.po_id=po.id WHERE poi.id = " . (int)$itemId)->fetch(PDO::FETCH_ASSOC);
                     if ($row) {
+                        $product_id = $row['product_id'];
+                        
+                        // Ensure product exists in main products table
+                        $stmt = $conn->prepare("SELECT id FROM products WHERE id = :product_id");
+                        $stmt->execute([':product_id' => $product_id]);
+                        $productExists = $stmt->fetchColumn();
+                        
+                        if (!$productExists) {
+                            // Try to get product info from po_items to create the product
+                            $stmt = $conn->prepare("
+                                SELECT 
+                                    poi.product_name,
+                                    poi.unit_price,
+                                    spc.product_code as sku,
+                                    spc.category,
+                                    spc.weight_kg,
+                                    spc.dimensions_cm,
+                                    spc.barcode
+                                FROM po_items poi
+                                LEFT JOIN supplier_products_catalog spc ON poi.supplier_product_id = spc.id
+                                WHERE poi.po_id = :po_id
+                                ORDER BY poi.id
+                                LIMIT 1
+                            ");
+                            $stmt->execute([':po_id' => $id]);
+                            $productInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+                            
+                            if ($productInfo && !empty($productInfo['product_name'])) {
+                                // Generate SKU if not available
+                                $sku = $productInfo['sku'] ?: 'AUTO-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+                                
+                                // Create product in main products table
+                                $stmt = $conn->prepare("
+                                    INSERT INTO products 
+                                    (id, sku, name, description, unit_price, weight_kg, dimensions_cm, 
+                                     barcode, is_active, created_at, updated_at)
+                                    VALUES 
+                                    (:id, :sku, :name, :description, :unit_price, :weight_kg, :dimensions_cm,
+                                     :barcode, 1, NOW(), NOW())
+                                ");
+                                $stmt->execute([
+                                    ':id' => $product_id,
+                                    ':sku' => $sku,
+                                    ':name' => $productInfo['product_name'],
+                                    ':description' => "Auto-created from PO #{$id}" . (isset($productInfo['category']) ? " - Category: " . $productInfo['category'] : ''),
+                                    ':unit_price' => $productInfo['unit_price'] ?: 0,
+                                    ':weight_kg' => $productInfo['weight_kg'] ?? null,
+                                    ':dimensions_cm' => $productInfo['dimensions_cm'] ?? null,
+                                    ':barcode' => $productInfo['barcode'] ?? null
+                                ]);
+                            } else {
+                                // Fallback: create minimal product record
+                                $stmt = $conn->prepare("
+                                    INSERT INTO products 
+                                    (id, sku, name, description, unit_price, is_active, created_at, updated_at)
+                                    VALUES 
+                                    (:id, :sku, :name, :description, 0, 1, NOW(), NOW())
+                                ");
+                                $stmt->execute([
+                                    ':id' => $product_id,
+                                    ':sku' => 'AUTO-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8)),
+                                    ':name' => 'Product #' . $product_id,
+                                    ':description' => "Auto-created during receiving from PO #{$id}"
+                                ]);
+                            }
+                        }
                         // Adjust inventory and log
                         $stmt = $conn->prepare("SELECT id, quantity FROM inventory WHERE product_id = :pid AND warehouse_id = :wid FOR UPDATE");
                         $stmt->execute([':pid'=>$row['product_id'],':wid'=>$row['warehouse_id']]);

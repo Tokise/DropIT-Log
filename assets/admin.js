@@ -61,7 +61,16 @@
         <div class="col-12">${recentAudit(recent)}</div>
       `;
     }catch(e){
-      app.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+      app.innerHTML = `<div class="alert alert-danger">
+        <i class="fa-solid fa-exclamation-triangle me-2"></i>
+        Failed to load dashboard data. Please refresh the page.
+      </div>`;
+      Swal.fire({
+        icon: 'error',
+        title: 'Dashboard Error',
+        text: e.message,
+        footer: 'Please check your database configuration and try again.'
+      });
     }
   }
 

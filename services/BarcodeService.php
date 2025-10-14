@@ -170,4 +170,63 @@ class BarcodeService {
         $calculatedCheck = (10 - ($sum % 10)) % 10;
         return $calculatedCheck === $checkDigit;
     }
+    
+    /**
+     * Generate a valid EAN-13 barcode for a product
+     */
+    public function generateBarcode($productId, $categoryCode = '200') {
+        // Use a simple format: [3-digit category][6-digit product ID][checksum]
+        // Category 200-299 for internal products
+        $productIdPadded = str_pad($productId, 6, '0', STR_PAD_LEFT);
+        $baseCode = $categoryCode . $productIdPadded . '000'; // 12 digits without checksum
+        
+        // Calculate checksum
+        $checksum = $this->calculateEAN13Checksum($baseCode);
+        $barcode = $baseCode . $checksum;
+        
+        return substr($barcode, 0, 13); // Ensure it's exactly 13 digits
+    }
+    
+    /**
+     * Calculate EAN-13 checksum
+     */
+    private function calculateEAN13Checksum($code) {
+        $digits = str_split($code);
+        $sum = 0;
+        
+        for ($i = 0; $i < 12; $i++) {
+            $multiplier = ($i % 2 === 0) ? 1 : 3;
+            $sum += (int)$digits[$i] * $multiplier;
+        }
+        
+        return (10 - ($sum % 10)) % 10;
+    }
+    
+    /**
+     * Generate barcode image using external API
+     */
+    public function generateBarcodeImage($barcode, $format = 'png') {
+        // Use a free barcode generation API
+        $apiUrl = "https://barcode.tec-it.com/barcode.ashx?data=" . urlencode($barcode) . "&code=EAN13&multiplebarcodes=false&translate-esc=false&unit=Fit&dpi=96&imagetype=" . strtoupper($format) . "&rotation=0&color=%23000000&bgcolor=%23ffffff&qunit=Mm&quiet=0";
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        
+        $imageData = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode === 200 && $imageData) {
+            return [
+                'success' => true,
+                'image_data' => base64_encode($imageData),
+                'format' => $format
+            ];
+        }
+        
+        return ['success' => false, 'error' => 'Failed to generate barcode image'];
+    }
 }

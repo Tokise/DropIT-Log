@@ -128,44 +128,8 @@ try {
                 $poItem = $stmt->fetch(PDO::FETCH_ASSOC);
                 
                 if (!$poItem) {
-                    throw new Exception("PO item not found");
                 }
-                
-                // Insert into receiving_queue
-                $stmt = $conn->prepare("
-                    INSERT INTO receiving_queue 
-                    (receipt_number, po_id, po_item_id, supplier_product_id, quantity, status, qc_status, qc_notes, location_code, batch_number, expiry_date, received_by, received_date)
-                    VALUES 
-                    (:receipt_number, :po_id, :po_item_id, :supplier_product_id, :quantity, 'pending', :qc_status, :qc_notes, :location_code, :batch_number, :expiry_date, :received_by, NOW())
-                ");
-                $stmt->execute([
-                    ':receipt_number' => $receiptNumber,
-                    ':po_id' => $poId,
-                    ':po_item_id' => $poItemId,
-                    ':supplier_product_id' => $poItem['supplier_product_id'],
-                    ':quantity' => $receivedQty,
-                    ':qc_status' => $qcStatus,
-                    ':qc_notes' => $qcNotes,
-                    ':location_code' => $locationCode,
-                    ':batch_number' => $batchNumber,
-                    ':expiry_date' => $expiryDate,
-                    ':received_by' => $authUserId
-                ]);
-                
-                // Update PO item received quantity
-                $stmt = $conn->prepare("UPDATE po_items SET received_quantity = received_quantity + :qty WHERE id = :id");
-                $stmt->execute([':qty' => $receivedQty, ':id' => $poItemId]);
             }
-            
-            // Update PO status to partially_received or received
-            $stmt = $conn->prepare("
-                SELECT 
-                    SUM(quantity) as total_ordered,
-                    SUM(received_quantity) as total_received
-                FROM po_items
-                WHERE po_id = :po_id
-            ");
-            $stmt->execute([':po_id' => $poId]);
             $totals = $stmt->fetch(PDO::FETCH_ASSOC);
             
             $newStatus = ($totals['total_received'] >= $totals['total_ordered']) ? 'received' : 'partially_received';

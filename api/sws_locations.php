@@ -22,10 +22,20 @@ try {
                 SELECT 
                     z.*,
                     w.name as warehouse_name,
-                    COUNT(l.id) as location_count
+                    COUNT(DISTINCT wa.id) as aisle_count,
+                    COUNT(DISTINCT wb.id) as bin_count,
+                    COALESCE(SUM(wb.current_units), 0) as total_current_units,
+                    COALESCE(SUM(wb.capacity_units), 0) as total_capacity_units,
+                    CASE 
+                        WHEN SUM(wb.capacity_units) > 0 
+                        THEN ROUND((SUM(wb.current_units) / SUM(wb.capacity_units)) * 100, 1)
+                        ELSE 0 
+                    END as utilization_percent
                 FROM warehouse_zones z
                 LEFT JOIN warehouses w ON z.warehouse_id = w.id
-                LEFT JOIN warehouse_locations l ON z.id = l.zone_id
+                LEFT JOIN warehouse_aisles wa ON z.id = wa.zone_id AND wa.is_active = 1
+                LEFT JOIN warehouse_racks wr ON wa.id = wr.aisle_id AND wr.is_active = 1
+                LEFT JOIN warehouse_bins wb ON wr.id = wb.rack_id AND wb.is_active = 1
                 WHERE z.warehouse_id = :wid AND z.is_active = 1
                 GROUP BY z.id
                 ORDER BY z.zone_code
@@ -73,34 +83,133 @@ try {
         }
         
         if ($action === 'tree') {
-            // Get full tree structure
+            // Get full tree structure with aisles, racks, and bins
             $warehouse_id = isset($_GET['warehouse_id']) ? (int)$_GET['warehouse_id'] : 1;
             
             $stmt = $conn->prepare("
-                SELECT * FROM warehouse_zones 
-                WHERE warehouse_id = :wid AND is_active = 1 
-                ORDER BY zone_code
+                SELECT 
+                    z.*,
+                    COUNT(DISTINCT wa.id) as aisle_count,
+                    COUNT(DISTINCT wb.id) as bin_count,
+                    COALESCE(SUM(wb.current_units), 0) as total_current_units,
+                    COALESCE(SUM(wb.capacity_units), 0) as total_capacity_units
+                FROM warehouse_zones z
+                LEFT JOIN warehouse_aisles wa ON z.id = wa.zone_id AND wa.is_active = 1
+                LEFT JOIN warehouse_racks wr ON wa.id = wr.aisle_id AND wr.is_active = 1
+                LEFT JOIN warehouse_bins wb ON wr.id = wb.rack_id AND wb.is_active = 1
+                WHERE z.warehouse_id = :wid AND z.is_active = 1 
+                GROUP BY z.id
+                ORDER BY z.zone_code
             ");
             $stmt->execute([':wid' => $warehouse_id]);
             $zones = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             foreach ($zones as &$zone) {
+                // Get aisles for this zone
                 $stmt = $conn->prepare("
-                    SELECT * FROM warehouse_locations 
-                    WHERE zone_id = :zid AND is_active = 1 
-                    ORDER BY location_code
+                    SELECT 
+                        wa.*,
+                        COUNT(DISTINCT wb.id) as bin_count,
+                        COALESCE(SUM(wb.current_units), 0) as current_units,
+                        COALESCE(SUM(wb.capacity_units), 0) as capacity_units,
+                        CASE 
+                            WHEN SUM(wb.capacity_units) > 0 
+                            THEN ROUND((SUM(wb.current_units) / SUM(wb.capacity_units)) * 100, 1)
+                            ELSE 0 
+                        END as utilization_percent
+                    FROM warehouse_aisles wa
+                    LEFT JOIN warehouse_racks wr ON wa.id = wr.aisle_id AND wr.is_active = 1
+                    LEFT JOIN warehouse_bins wb ON wr.id = wb.rack_id AND wb.is_active = 1
+                    WHERE wa.zone_id = :zid AND wa.is_active = 1 
+                    GROUP BY wa.id
+                    ORDER BY wa.aisle_code
                 ");
                 $stmt->execute([':zid' => $zone['id']]);
-                $zone['locations'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $zone['aisles'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // For backward compatibility, also provide locations array
+                $zone['locations'] = $zone['aisles'];
             }
             
             json_ok(['zones' => $zones]);
         }
     }
     
-    // POST - Create zone or location
+    // POST - Create zone, location, or aisle
     if ($method === 'POST') {
         $data = read_json_body();
+        
+        if ($action === 'create_aisle') {
+            // Create aisle with racks and bins
+            require_params($data, ['zone_id', 'aisle_code', 'aisle_name']);
+            
+            $conn->beginTransaction();
+            
+            try {
+                // Create aisle
+                $stmt = $conn->prepare("
+                    INSERT INTO warehouse_aisles 
+                    (zone_id, aisle_code, aisle_name, description, is_active, created_at, updated_at)
+                    VALUES (:zone_id, :code, :name, :description, 1, NOW(), NOW())
+                ");
+                $stmt->execute([
+                    ':zone_id' => $data['zone_id'],
+                    ':code' => $data['aisle_code'],
+                    ':name' => $data['aisle_name'],
+                    ':description' => $data['aisle_name'] . ' storage aisle'
+                ]);
+                $aisleId = $conn->lastInsertId();
+                
+                // Create racks
+                $rackCount = $data['rack_count'] ?? 2;
+                $binsPerRack = $data['bins_per_rack'] ?? 12;
+                $binCapacity = $data['bin_capacity'] ?? 50;
+                
+                for ($r = 1; $r <= $rackCount; $r++) {
+                    $rackCode = 'R' . str_pad($r, 2, '0', STR_PAD_LEFT);
+                    
+                    $stmt = $conn->prepare("
+                        INSERT INTO warehouse_racks 
+                        (aisle_id, rack_code, rack_name, levels, is_active, created_at, updated_at)
+                        VALUES (:aisle_id, :code, :name, 4, 1, NOW(), NOW())
+                    ");
+                    $stmt->execute([
+                        ':aisle_id' => $aisleId,
+                        ':code' => $rackCode,
+                        ':name' => "Rack {$rackCode}"
+                    ]);
+                    $rackId = $conn->lastInsertId();
+                    
+                    // Create bins
+                    for ($b = 1; $b <= $binsPerRack; $b++) {
+                        $binCode = 'B' . str_pad($b, 3, '0', STR_PAD_LEFT);
+                        
+                        $stmt = $conn->prepare("
+                            INSERT INTO warehouse_bins 
+                            (rack_id, bin_code, bin_name, capacity_units, current_units, is_active, created_at, updated_at)
+                            VALUES (:rack_id, :code, :name, :capacity, 0, 1, NOW(), NOW())
+                        ");
+                        $stmt->execute([
+                            ':rack_id' => $rackId,
+                            ':code' => $binCode,
+                            ':name' => "Bin {$binCode}",
+                            ':capacity' => $binCapacity
+                        ]);
+                    }
+                }
+                
+                $conn->commit();
+                json_ok([
+                    'success' => true, 
+                    'message' => "Aisle {$data['aisle_code']} created with {$rackCount} racks and " . ($rackCount * $binsPerRack) . " bins",
+                    'aisle_id' => $aisleId
+                ]);
+                
+            } catch (Exception $e) {
+                $conn->rollBack();
+                json_err('Failed to create aisle: ' . $e->getMessage(), 500);
+            }
+        }
         
         if ($action === 'zone') {
             require_params($data, ['warehouse_id', 'zone_code', 'zone_name']);

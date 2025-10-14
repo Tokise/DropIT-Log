@@ -167,6 +167,84 @@ try {
                     $batch_number = $item['batch_number'] ?? null;
                     $expiry_date = $item['expiry_date'] ?? null;
                     
+                    // Ensure product exists in main products table
+                    $stmt = $conn->prepare("SELECT id FROM products WHERE id = :product_id");
+                    $stmt->execute([':product_id' => $product_id]);
+                    $productExists = $stmt->fetchColumn();
+                    
+                    if (!$productExists) {
+                        // Try to get product info from PO items to create the product
+                        $productInfo = null;
+                        
+                        // First try the new po_items table
+                        $stmt = $conn->prepare("
+                            SELECT 
+                                poi.product_name,
+                                poi.unit_price,
+                                spc.product_code as sku,
+                                spc.category,
+                                spc.unit_of_measure,
+                                spc.weight_kg,
+                                spc.dimensions_cm,
+                                spc.barcode
+                            FROM po_items poi
+                            LEFT JOIN supplier_products_catalog spc ON poi.supplier_product_id = spc.id
+                            WHERE poi.po_id = :po_id
+                            ORDER BY poi.id
+                            LIMIT 1
+                        ");
+                        $stmt->execute([':po_id' => $po_id]);
+                        $productInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        // If no info from new table, try to find any product from the item data
+                        if (!$productInfo && isset($item['product_name'])) {
+                            $productInfo = [
+                                'product_name' => $item['product_name'],
+                                'unit_price' => $item['unit_price'] ?? 0,
+                                'sku' => $item['sku'] ?? null
+                            ];
+                        }
+                        
+                        if ($productInfo && !empty($productInfo['product_name'])) {
+                            // Generate SKU if not available
+                            $sku = $productInfo['sku'] ?: 'AUTO-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+                            
+                            // Create product in main products table
+                            $stmt = $conn->prepare("
+                                INSERT INTO products 
+                                (id, sku, name, description, unit_price, weight_kg, dimensions_cm, 
+                                 barcode, is_active, created_at, updated_at)
+                                VALUES 
+                                (:id, :sku, :name, :description, :unit_price, :weight_kg, :dimensions_cm,
+                                 :barcode, 1, NOW(), NOW())
+                            ");
+                            $stmt->execute([
+                                ':id' => $product_id,
+                                ':sku' => $sku,
+                                ':name' => $productInfo['product_name'],
+                                ':description' => "Auto-created from PO #{$po_id}" . (isset($productInfo['category']) ? " - Category: " . $productInfo['category'] : ''),
+                                ':unit_price' => $productInfo['unit_price'] ?: 0,
+                                ':weight_kg' => $productInfo['weight_kg'] ?? null,
+                                ':dimensions_cm' => $productInfo['dimensions_cm'] ?? null,
+                                ':barcode' => $productInfo['barcode'] ?? null
+                            ]);
+                        } else {
+                            // Fallback: create minimal product record
+                            $stmt = $conn->prepare("
+                                INSERT INTO products 
+                                (id, sku, name, description, unit_price, is_active, created_at, updated_at)
+                                VALUES 
+                                (:id, :sku, :name, :description, 0, 1, NOW(), NOW())
+                            ");
+                            $stmt->execute([
+                                ':id' => $product_id,
+                                ':sku' => 'AUTO-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8)),
+                                ':name' => 'Product #' . $product_id,
+                                ':description' => "Auto-created during receiving from PO #{$po_id}"
+                            ]);
+                        }
+                    }
+                    
                     // If no bin_id and AI enabled, get AI suggestion
                     $location_id = null;
                     if (!$bin_id && $use_ai) {
@@ -223,11 +301,24 @@ try {
                         ]);
                     }
                     
-                    // Update PO item received quantity
+                    // Update PO item received quantity (try both tables)
+                    // First try the new po_items table
+                    $stmt = $conn->prepare("
+                        UPDATE po_items
+                        SET received_quantity = received_quantity + :quantity
+                        WHERE po_id = :po_id
+                        LIMIT 1
+                    ");
+                    $stmt->execute([
+                        ':quantity' => $quantity,
+                        ':po_id' => $po_id
+                    ]);
+                    
+                    // Also update legacy table if it exists
                     $stmt = $conn->prepare("
                         UPDATE purchase_order_items
                         SET received_quantity = received_quantity + :quantity
-                        WHERE purchase_order_id = :po_id AND product_id = :product_id
+                        WHERE po_id = :po_id AND product_id = :product_id
                     ");
                     $stmt->execute([
                         ':quantity' => $quantity,
@@ -257,16 +348,29 @@ try {
                     ]);
                 }
                 
-                // Check if PO is fully received
+                // Check if PO is fully received (try both tables)
                 $stmt = $conn->prepare("
                     SELECT 
                         SUM(quantity) as total_qty,
                         SUM(received_quantity) as received_qty
-                    FROM purchase_order_items
-                    WHERE purchase_order_id = :po_id
+                    FROM po_items
+                    WHERE po_id = :po_id
                 ");
                 $stmt->execute([':po_id' => $po_id]);
                 $totals = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+                // If no data from new table, try legacy table
+                if (!$totals || $totals['total_qty'] == 0) {
+                    $stmt = $conn->prepare("
+                        SELECT 
+                            SUM(quantity) as total_qty,
+                            SUM(received_quantity) as received_qty
+                        FROM purchase_order_items
+                        WHERE po_id = :po_id
+                    ");
+                    $stmt->execute([':po_id' => $po_id]);
+                    $totals = $stmt->fetch(PDO::FETCH_ASSOC);
+                }
                 
                 if ($totals['total_qty'] == $totals['received_qty']) {
                     // Mark PO as completed

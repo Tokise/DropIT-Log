@@ -5,12 +5,12 @@
  */
 
 class AIConfig {
-    // Default to OpenRouter with free Gemini model
-    private $ai_provider = "openrouter"; // Options: openai, claude, gemini, openrouter, custom
+    // Default to Gemini directly
+    private $ai_provider = "gemini"; // Options: openai, claude, gemini, openrouter, custom
     private $api_key = ""; // Set your API key here or use environment variable
-    // OpenRouter API endpoint
-    private $api_endpoint = "https://openrouter.ai/api/v1/chat/completions";
-    private $model = "google/gemini-2.0-flash-exp:free"; // FREE model via OpenRouter
+    // Gemini API endpoint
+    private $api_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent";
+    private $model = "gemini-2.0-flash-exp"; // Gemini model
     
     // AI Automation Settings
     private $settings = [
@@ -26,19 +26,15 @@ class AIConfig {
 
     public function __construct() {
         // Load API key from environment or configuration
-        // Support multiple providers: OpenRouter, Claude, Gemini, OpenAI
-        if ($this->ai_provider === 'openrouter') {
-            $this->api_key = getenv('OPENROUTER_API_KEY')
-                ?: (getenv('GEMINI_API_KEY')
+        // Support multiple providers: Gemini, Claude, OpenAI
+        if ($this->ai_provider === 'gemini') {
+            $this->api_key = getenv('GEMINI_API_KEY')
+                ?: (getenv('GOOGLE_GENAI_API_KEY')
                 ?: (getenv('AI_API_KEY') ?: $this->api_key));
         } elseif ($this->ai_provider === 'claude') {
             $this->api_key = getenv('ANTHROPHIC_API_KEY')
                 ?: (getenv('ANTHROPIC_API_KEY')
                 ?: (getenv('CLAUDE_API_KEY') ?: $this->api_key));
-        } elseif ($this->ai_provider === 'gemini') {
-            $this->api_key = getenv('GEMINI_API_KEY')
-                ?: (getenv('GOOGLE_GENAI_API_KEY')
-                ?: (getenv('AI_API_KEY') ?: $this->api_key));
         } elseif ($this->ai_provider === 'openai') {
             $this->api_key = getenv('OPENAI_API_KEY')
                 ?: (getenv('AI_API_KEY') ?: $this->api_key);
@@ -58,16 +54,12 @@ class AIConfig {
                             $v = trim($v, "\"' ");
                             
                             // Check for provider-specific keys
-                            if ($this->ai_provider === 'openrouter' && 
-                                in_array($k, ['OPENROUTER_API_KEY','GEMINI_API_KEY','AI_API_KEY'], true) && !empty($v)) {
+                            if ($this->ai_provider === 'gemini' && 
+                                in_array($k, ['GEMINI_API_KEY','GOOGLE_GENAI_API_KEY','AI_API_KEY'], true) && !empty($v)) {
                                 $this->api_key = $v;
                                 break;
                             } elseif ($this->ai_provider === 'claude' && 
                                 in_array($k, ['ANTHROPHIC_API_KEY','ANTHROPIC_API_KEY','CLAUDE_API_KEY'], true) && !empty($v)) {
-                                $this->api_key = $v;
-                                break;
-                            } elseif ($this->ai_provider === 'gemini' && 
-                                in_array($k, ['GEMINI_API_KEY','GOOGLE_GENAI_API_KEY','AI_API_KEY'], true) && !empty($v)) {
                                 $this->api_key = $v;
                                 break;
                             } elseif ($this->ai_provider === 'openai' && 

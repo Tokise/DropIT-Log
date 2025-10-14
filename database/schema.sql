@@ -1,8 +1,8 @@
 -- Smart Warehousing and Procurement System Database Schema
 -- Consolidated schema with all modules and enhancements
 
-CREATE DATABASE IF NOT EXISTS smart_warehouse;
-USE smart_warehouse;
+CREATE DATABASE IF NOT EXISTS dropit_logistic;
+USE dropit_logistic;
 
 -- Users and Authentication (without supplier_id foreign key initially)
 CREATE TABLE IF NOT EXISTS users (
@@ -29,12 +29,105 @@ CREATE TABLE IF NOT EXISTS warehouses (
     code VARCHAR(20) UNIQUE NOT NULL,
     address TEXT,
     city VARCHAR(100),
+    phone VARCHAR(20),
+    email VARCHAR(100),
+    manager_name VARCHAR(100),
     country VARCHAR(100),
     capacity_cubic_meters DECIMAL(12,2),
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Warehouse Zones
+CREATE TABLE IF NOT EXISTS warehouse_zones (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    warehouse_id INT NOT NULL,
+    zone_code VARCHAR(10) NOT NULL,
+    zone_name VARCHAR(100) NOT NULL,
+    zone_type ENUM('receiving', 'storage', 'packing', 'shipping', 'quarantine') DEFAULT 'storage',
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_warehouse_zone (warehouse_id, zone_code),
+    INDEX idx_warehouse (warehouse_id),
+    INDEX idx_zone_type (zone_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Warehouse Aisles
+CREATE TABLE IF NOT EXISTS warehouse_aisles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    zone_id INT NOT NULL,
+    aisle_code VARCHAR(10) NOT NULL,
+    aisle_name VARCHAR(100),
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (zone_id) REFERENCES warehouse_zones(id) ON DELETE CASCADE,
+    INDEX idx_zone (zone_id),
+    INDEX idx_aisle_code (aisle_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Warehouse Racks
+CREATE TABLE IF NOT EXISTS warehouse_racks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    aisle_id INT NOT NULL,
+    rack_code VARCHAR(10) NOT NULL,
+    rack_name VARCHAR(100),
+    levels INT DEFAULT 4,
+    width_cm DECIMAL(8,2),
+    depth_cm DECIMAL(8,2),
+    height_cm DECIMAL(8,2),
+    capacity_weight_kg DECIMAL(10,2),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (aisle_id) REFERENCES warehouse_aisles(id) ON DELETE CASCADE,
+    INDEX idx_aisle (aisle_id),
+    INDEX idx_rack_code (rack_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Warehouse Bins
+CREATE TABLE IF NOT EXISTS warehouse_bins (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    rack_id INT NOT NULL,
+    bin_code VARCHAR(10) NOT NULL,
+    bin_name VARCHAR(100),
+    level INT DEFAULT 1,
+    position INT DEFAULT 1,
+    bin_type ENUM('standard', 'oversized', 'fragile', 'hazmat') DEFAULT 'standard',
+    capacity_units INT DEFAULT 50,
+    current_units INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (rack_id) REFERENCES warehouse_racks(id) ON DELETE CASCADE,
+    INDEX idx_rack (rack_id),
+    INDEX idx_bin_code (bin_code),
+    INDEX idx_capacity (capacity_units, current_units)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Inventory Locations (links products to specific bins)
+CREATE TABLE IF NOT EXISTS inventory_locations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT NOT NULL,
+    bin_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    batch_number VARCHAR(50),
+    expiry_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (bin_id) REFERENCES warehouse_bins(id) ON DELETE CASCADE,
+    INDEX idx_product (product_id),
+    INDEX idx_bin (bin_id),
+    INDEX idx_batch (batch_number),
+    INDEX idx_expiry (expiry_date),
+    UNIQUE KEY unique_product_bin_batch (product_id, bin_id, batch_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Categories
@@ -569,19 +662,59 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS shipments (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    project_id INT NULL,
-    carrier VARCHAR(100) NULL,
-    tracking_no VARCHAR(100) NULL,
-    origin VARCHAR(200) NULL,
-    destination VARCHAR(200) NULL,
-    eta DATE NULL,
-    status ENUM('planned','in_transit','delayed','arrived','cancelled') DEFAULT 'planned',
+    tracking_number VARCHAR(100) UNIQUE NOT NULL,
+    warehouse_id INT NOT NULL,
+    customer_name VARCHAR(200) NOT NULL,
+    customer_email VARCHAR(100) NULL,
+    customer_phone VARCHAR(20) NULL,
+    delivery_address TEXT NOT NULL,
+    city VARCHAR(100) NULL,
+    state VARCHAR(100) NULL,
+    postal_code VARCHAR(20) NULL,
+    country VARCHAR(100) DEFAULT 'Philippines',
+    priority ENUM('standard','express','urgent') DEFAULT 'standard',
+    status ENUM('pending','picked','packed','in_transit','out_for_delivery','delivered','failed','returned') DEFAULT 'pending',
+    total_weight_kg DECIMAL(10,3) DEFAULT 0,
+    total_value DECIMAL(12,2) DEFAULT 0,
+    shipping_cost DECIMAL(12,2) DEFAULT 0,
+    driver_id INT NULL,
+    vehicle_id INT NULL,
+    estimated_delivery DATETIME NULL,
+    actual_delivery DATETIME NULL,
+    picked_at DATETIME NULL,
+    packed_at DATETIME NULL,
+    shipped_at DATETIME NULL,
+    delivered_at DATETIME NULL,
+    notes TEXT NULL,
+    created_by INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
-    INDEX idx_project (project_id),
-    INDEX idx_tracking (tracking_no),
-    INDEX idx_status (status)
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE RESTRICT,
+    FOREIGN KEY (driver_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
+    INDEX idx_tracking_number (tracking_number),
+    INDEX idx_status (status),
+    INDEX idx_warehouse (warehouse_id),
+    INDEX idx_customer (customer_name),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Shipment Items
+CREATE TABLE IF NOT EXISTS shipment_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shipment_id INT NOT NULL,
+    product_id INT NULL,
+    product_name VARCHAR(255) NOT NULL,
+    quantity DECIMAL(10,2) NOT NULL,
+    weight_kg DECIMAL(10,3) DEFAULT 0,
+    value DECIMAL(12,2) DEFAULT 0,
+    barcode VARCHAR(100) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_product (product_id),
+    INDEX idx_barcode (barcode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS shipment_milestones (
@@ -602,13 +735,19 @@ CREATE TABLE IF NOT EXISTS tracking_events (
     id INT AUTO_INCREMENT PRIMARY KEY,
     shipment_id INT NOT NULL,
     event_type VARCHAR(100) NOT NULL,
+    status VARCHAR(50) NULL,
     location VARCHAR(200) NULL,
-    notes TEXT NULL,
-    event_time DATETIME NOT NULL,
+    latitude DECIMAL(10,8) NULL,
+    longitude DECIMAL(11,8) NULL,
+    description TEXT NULL,
+    performed_by INT NULL,
+    event_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL,
     INDEX idx_shipment (shipment_id),
-    INDEX idx_event_time (event_time)
+    INDEX idx_event_time (event_time),
+    INDEX idx_performed_by (performed_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =============================================================
@@ -617,50 +756,84 @@ CREATE TABLE IF NOT EXISTS tracking_events (
 
 CREATE TABLE IF NOT EXISTS assets (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    code VARCHAR(50) UNIQUE NOT NULL,
-    name VARCHAR(200) NOT NULL,
+    asset_code VARCHAR(50) UNIQUE NOT NULL,
+    asset_name VARCHAR(200) NOT NULL,
+    asset_type ENUM('vehicle','equipment','machinery','it_hardware','furniture','other') NOT NULL,
     category VARCHAR(100) NULL,
-    serial_no VARCHAR(100) NULL,
+    description TEXT NULL,
+    manufacturer VARCHAR(100) NULL,
+    model VARCHAR(100) NULL,
+    serial_number VARCHAR(100) NULL,
+    barcode VARCHAR(100) NULL,
+    qr_code VARCHAR(100) NULL,
+    purchase_date DATE NULL,
+    purchase_cost DECIMAL(12,2) DEFAULT 0,
+    current_value DECIMAL(12,2) DEFAULT 0,
+    depreciation_method ENUM('straight_line','declining_balance','units_of_production') DEFAULT 'straight_line',
+    useful_life_years INT DEFAULT 5,
+    salvage_value DECIMAL(12,2) DEFAULT 0,
     location VARCHAR(200) NULL,
-    status ENUM('active','maintenance','retired') DEFAULT 'active',
-    purchased_at DATE NULL,
-    warranty_until DATE NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_code (code),
-    INDEX idx_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS maintenance_plans (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    asset_id INT NOT NULL,
-    interval_days INT NOT NULL,
-    last_service_at DATE NULL,
-    next_due_at DATE NULL,
-    notes TEXT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
-    INDEX idx_asset (asset_id),
-    INDEX idx_next_due (next_due_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS work_orders (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    asset_id INT NOT NULL,
-    type ENUM('inspection','repair','replacement','calibration','other') DEFAULT 'inspection',
-    priority ENUM('low','medium','high','critical') DEFAULT 'medium',
-    status ENUM('open','scheduled','in_progress','completed','cancelled') DEFAULT 'open',
+    warehouse_id INT NULL,
     assigned_to INT NULL,
-    scheduled_for DATETIME NULL,
-    completed_at DATETIME NULL,
+    status ENUM('active','maintenance','retired','disposed') DEFAULT 'active',
+    condition_rating ENUM('excellent','good','fair','poor','critical') DEFAULT 'good',
+    warranty_expiry DATE NULL,
+    insurance_policy VARCHAR(100) NULL,
+    insurance_expiry DATE NULL,
+    maintenance_interval_days INT DEFAULT 90,
+    next_maintenance_date DATE NULL,
+    last_maintenance_date DATE NULL,
     notes TEXT NULL,
+    photo_url VARCHAR(255) NULL,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE SET NULL,
+    FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
+    INDEX idx_asset_code (asset_code),
+    INDEX idx_asset_type (asset_type),
+    INDEX idx_status (status),
+    INDEX idx_warehouse (warehouse_id),
+    INDEX idx_barcode (barcode),
+    INDEX idx_qr_code (qr_code),
+    INDEX idx_next_maintenance (next_maintenance_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Asset Maintenance Records
+CREATE TABLE IF NOT EXISTS asset_maintenance (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    maintenance_type ENUM('preventive','corrective','predictive','emergency','inspection') DEFAULT 'preventive',
+    title VARCHAR(255) NOT NULL,
+    description TEXT NULL,
+    priority ENUM('low','medium','high','critical') DEFAULT 'medium',
+    status ENUM('scheduled','in_progress','completed','cancelled','overdue') DEFAULT 'scheduled',
+    scheduled_date DATE NOT NULL,
+    completed_date DATE NULL,
+    estimated_cost DECIMAL(12,2) DEFAULT 0,
+    actual_cost DECIMAL(12,2) DEFAULT 0,
+    estimated_hours DECIMAL(8,2) DEFAULT 0,
+    actual_hours DECIMAL(8,2) DEFAULT 0,
+    performed_by INT NULL,
+    vendor_name VARCHAR(200) NULL,
+    vendor_contact VARCHAR(100) NULL,
+    parts_used TEXT NULL,
+    work_performed TEXT NULL,
+    notes TEXT NULL,
+    next_maintenance_date DATE NULL,
+    created_by INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
-    FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
     INDEX idx_asset (asset_id),
-    INDEX idx_assigned_to (assigned_to),
-    INDEX idx_status (status)
+    INDEX idx_maintenance_type (maintenance_type),
+    INDEX idx_status (status),
+    INDEX idx_scheduled_date (scheduled_date),
+    INDEX idx_priority (priority),
+    INDEX idx_performed_by (performed_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS asset_events (
@@ -1021,4 +1194,504 @@ ADD INDEX IF NOT EXISTS idx_approved_by (approved_by);
 -- Add foreign key constraints (only if tables exist)
 -- These will fail silently if movement_reasons doesn't exist
 SET FOREIGN_KEY_CHECKS = 0;
+
+-- =============================================================
+-- PLT MODULE: Enhanced Shipment & Logistics Tracking Tables
+-- =============================================================
+
+-- Enhanced shipments table (replacing the basic one)
+DROP TABLE IF EXISTS shipment_milestones;
+DROP TABLE IF EXISTS tracking_events;
+DROP TABLE IF EXISTS shipments;
+
+CREATE TABLE IF NOT EXISTS shipments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    tracking_number VARCHAR(50) UNIQUE NOT NULL,
+    order_id INT NULL,
+    warehouse_id INT NOT NULL,
+    customer_name VARCHAR(200) NOT NULL,
+    customer_email VARCHAR(100),
+    customer_phone VARCHAR(20),
+    delivery_address TEXT NOT NULL,
+    city VARCHAR(100),
+    state VARCHAR(100),
+    postal_code VARCHAR(20),
+    country VARCHAR(100) DEFAULT 'Philippines',
+    status ENUM('pending', 'picked', 'packed', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'returned') DEFAULT 'pending',
+    priority ENUM('standard', 'express', 'urgent') DEFAULT 'standard',
+    total_weight_kg DECIMAL(10,2),
+    total_value DECIMAL(12,2),
+    shipping_cost DECIMAL(10,2),
+    driver_id INT NULL,
+    vehicle_id INT NULL,
+    estimated_delivery DATETIME NULL,
+    actual_delivery DATETIME NULL,
+    picked_at DATETIME NULL,
+    packed_at DATETIME NULL,
+    shipped_at DATETIME NULL,
+    delivered_at DATETIME NULL,
+    notes TEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+    FOREIGN KEY (driver_id) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_tracking (tracking_number),
+    INDEX idx_status (status),
+    INDEX idx_driver (driver_id),
+    INDEX idx_delivery_date (estimated_delivery)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS shipment_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shipment_id INT NOT NULL,
+    product_id INT NOT NULL,
+    product_name VARCHAR(255) NOT NULL,
+    quantity INT NOT NULL,
+    weight_kg DECIMAL(10,2),
+    value DECIMAL(12,2),
+    barcode VARCHAR(50),
+    serial_numbers TEXT COMMENT 'JSON array',
+    picked TINYINT(1) DEFAULT 0,
+    packed TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id),
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_product (product_id),
+    INDEX idx_barcode (barcode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tracking_events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shipment_id INT NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    location VARCHAR(200),
+    latitude DECIMAL(10,8),
+    longitude DECIMAL(11,8),
+    description TEXT,
+    performed_by INT NULL,
+    event_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (performed_by) REFERENCES users(id),
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_event_time (event_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS delivery_proof (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shipment_id INT NOT NULL,
+    signature_image TEXT COMMENT 'Base64 or file path',
+    photo_image TEXT COMMENT 'Base64 or file path',
+    recipient_name VARCHAR(200),
+    recipient_relationship VARCHAR(100),
+    notes TEXT,
+    latitude DECIMAL(10,8),
+    longitude DECIMAL(11,8),
+    delivered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_shipment_proof (shipment_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================
+-- ALMS MODULE: Enhanced Asset & Lifecycle Management Tables
+-- =============================================================
+
+-- Enhanced assets table (replacing the basic one)
+DROP TABLE IF EXISTS asset_events;
+DROP TABLE IF EXISTS work_orders;
+DROP TABLE IF EXISTS maintenance_plans;
+DROP TABLE IF EXISTS assets;
+
+CREATE TABLE IF NOT EXISTS assets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_code VARCHAR(50) UNIQUE NOT NULL,
+    asset_name VARCHAR(255) NOT NULL,
+    asset_type ENUM('vehicle', 'equipment', 'machinery', 'it_hardware', 'furniture', 'building', 'other') NOT NULL,
+    category VARCHAR(100),
+    description TEXT,
+    manufacturer VARCHAR(200),
+    model VARCHAR(200),
+    serial_number VARCHAR(200),
+    barcode VARCHAR(50),
+    qr_code VARCHAR(100),
+    purchase_date DATE,
+    purchase_cost DECIMAL(15,2),
+    current_value DECIMAL(15,2),
+    depreciation_method ENUM('straight_line', 'declining_balance', 'units_of_production', 'none') DEFAULT 'straight_line',
+    useful_life_years INT DEFAULT 5,
+    salvage_value DECIMAL(15,2) DEFAULT 0,
+    location VARCHAR(200),
+    warehouse_id INT NULL,
+    assigned_to INT NULL COMMENT 'User ID',
+    status ENUM('active', 'maintenance', 'retired', 'disposed', 'lost', 'damaged') DEFAULT 'active',
+    condition_rating ENUM('excellent', 'good', 'fair', 'poor') DEFAULT 'good',
+    warranty_expiry DATE,
+    insurance_policy VARCHAR(100),
+    insurance_expiry DATE,
+    last_maintenance_date DATE,
+    next_maintenance_date DATE,
+    maintenance_interval_days INT DEFAULT 90,
+    notes TEXT,
+    photo_url VARCHAR(500),
+    documents TEXT COMMENT 'JSON array of document URLs',
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+    FOREIGN KEY (assigned_to) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_asset_code (asset_code),
+    INDEX idx_asset_type (asset_type),
+    INDEX idx_status (status),
+    INDEX idx_warehouse (warehouse_id),
+    INDEX idx_barcode (barcode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS asset_maintenance (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    maintenance_type ENUM('preventive', 'corrective', 'inspection', 'calibration', 'upgrade') NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    scheduled_date DATE NOT NULL,
+    completed_date DATE NULL,
+    status ENUM('scheduled', 'in_progress', 'completed', 'cancelled', 'overdue') DEFAULT 'scheduled',
+    priority ENUM('low', 'medium', 'high', 'critical') DEFAULT 'medium',
+    cost DECIMAL(12,2) DEFAULT 0,
+    performed_by INT NULL,
+    vendor VARCHAR(200),
+    parts_replaced TEXT COMMENT 'JSON array',
+    downtime_hours DECIMAL(8,2),
+    notes TEXT,
+    attachments TEXT COMMENT 'JSON array of file URLs',
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    FOREIGN KEY (performed_by) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_asset (asset_id),
+    INDEX idx_status (status),
+    INDEX idx_scheduled_date (scheduled_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS asset_depreciation (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    year INT NOT NULL,
+    month INT NOT NULL,
+    opening_value DECIMAL(15,2) NOT NULL,
+    depreciation_amount DECIMAL(15,2) NOT NULL,
+    accumulated_depreciation DECIMAL(15,2) NOT NULL,
+    closing_value DECIMAL(15,2) NOT NULL,
+    calculation_method VARCHAR(50),
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_asset_period (asset_id, year, month),
+    INDEX idx_asset (asset_id),
+    INDEX idx_period (year, month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS asset_transfers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    from_location VARCHAR(200),
+    to_location VARCHAR(200),
+    from_warehouse_id INT NULL,
+    to_warehouse_id INT NULL,
+    from_user_id INT NULL,
+    to_user_id INT NULL,
+    transfer_date DATE NOT NULL,
+    reason TEXT,
+    status ENUM('pending', 'approved', 'completed', 'rejected') DEFAULT 'pending',
+    approved_by INT NULL,
+    approved_at DATETIME NULL,
+    notes TEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    FOREIGN KEY (from_warehouse_id) REFERENCES warehouses(id),
+    FOREIGN KEY (to_warehouse_id) REFERENCES warehouses(id),
+    FOREIGN KEY (from_user_id) REFERENCES users(id),
+    FOREIGN KEY (to_user_id) REFERENCES users(id),
+    FOREIGN KEY (approved_by) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_asset (asset_id),
+    INDEX idx_status (status),
+    INDEX idx_transfer_date (transfer_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS asset_inspections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    asset_id INT NOT NULL,
+    inspection_date DATE NOT NULL,
+    inspector_id INT NOT NULL,
+    inspection_type ENUM('routine', 'safety', 'quality', 'compliance', 'pre_maintenance') NOT NULL,
+    condition_rating ENUM('excellent', 'good', 'fair', 'poor') NOT NULL,
+    findings TEXT,
+    issues_found TEXT COMMENT 'JSON array',
+    recommendations TEXT,
+    photos TEXT COMMENT 'JSON array of image URLs',
+    requires_maintenance TINYINT(1) DEFAULT 0,
+    requires_repair TINYINT(1) DEFAULT 0,
+    passed TINYINT(1) DEFAULT 1,
+    next_inspection_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+    FOREIGN KEY (inspector_id) REFERENCES users(id),
+    INDEX idx_asset (asset_id),
+    INDEX idx_inspection_date (inspection_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================
+-- DTLRS MODULE: Enhanced Document Tracking & Logistics Records
+-- =============================================================
+
+-- Enhanced documents table (replacing the basic one)
+DROP TABLE IF EXISTS document_links;
+DROP TABLE IF EXISTS documents;
+
+CREATE TABLE IF NOT EXISTS documents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    document_number VARCHAR(100) UNIQUE NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    document_type ENUM('invoice', 'packing_list', 'bill_of_lading', 'delivery_receipt', 'customs_declaration', 'certificate_of_origin', 'insurance_certificate', 'purchase_order', 'sales_order', 'waybill', 'manifest') NOT NULL,
+    entity_type VARCHAR(50) NULL COMMENT 'shipment, purchase_order, asset, etc',
+    entity_id INT NULL,
+    status ENUM('draft', 'pending_approval', 'approved', 'rejected', 'archived') DEFAULT 'draft',
+    file_path VARCHAR(500),
+    file_size INT,
+    mime_type VARCHAR(100),
+    checksum VARCHAR(64),
+    version INT DEFAULT 1,
+    is_template TINYINT(1) DEFAULT 0,
+    template_data JSON COMMENT 'Template field definitions',
+    workflow_id INT NULL,
+    current_step INT DEFAULT 1,
+    uploaded_by INT NOT NULL,
+    approved_by INT NULL,
+    approved_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (uploaded_by) REFERENCES users(id),
+    FOREIGN KEY (approved_by) REFERENCES users(id),
+    INDEX idx_document_number (document_number),
+    INDEX idx_document_type (document_type),
+    INDEX idx_entity (entity_type, entity_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS document_versions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    document_id INT NOT NULL,
+    version_number INT NOT NULL,
+    file_path VARCHAR(500),
+    file_size INT,
+    checksum VARCHAR(64),
+    changes_summary TEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    UNIQUE KEY unique_document_version (document_id, version_number),
+    INDEX idx_document (document_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS document_workflows (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    workflow_name VARCHAR(200) NOT NULL,
+    document_type VARCHAR(50) NOT NULL,
+    steps JSON NOT NULL COMMENT 'Array of workflow steps',
+    is_active TINYINT(1) DEFAULT 1,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_document_type (document_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS shipment_documents (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shipment_id INT NOT NULL,
+    document_id INT NOT NULL,
+    is_required TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_shipment_document (shipment_id, document_id),
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_document (document_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS compliance_records (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    entity_type VARCHAR(50) NOT NULL,
+    entity_id INT NOT NULL,
+    compliance_type VARCHAR(100) NOT NULL,
+    requirement VARCHAR(255) NOT NULL,
+    status ENUM('compliant', 'non_compliant', 'pending', 'expired') DEFAULT 'pending',
+    due_date DATE,
+    completed_date DATE NULL,
+    notes TEXT,
+    documents TEXT COMMENT 'JSON array of document IDs',
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_entity (entity_type, entity_id),
+    INDEX idx_status (status),
+    INDEX idx_due_date (due_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS customs_declarations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    declaration_number VARCHAR(100) UNIQUE NOT NULL,
+    shipment_id INT NOT NULL,
+    declaration_type ENUM('export', 'import', 'transit') NOT NULL,
+    hs_codes JSON COMMENT 'Array of HS codes for items',
+    total_value DECIMAL(15,2) NOT NULL,
+    currency VARCHAR(10) DEFAULT 'PHP',
+    duty_amount DECIMAL(15,2) DEFAULT 0,
+    tax_amount DECIMAL(15,2) DEFAULT 0,
+    status ENUM('draft', 'submitted', 'under_review', 'approved', 'rejected', 'cleared') DEFAULT 'draft',
+    submitted_at DATETIME NULL,
+    cleared_at DATETIME NULL,
+    customs_office VARCHAR(200),
+    broker_name VARCHAR(200),
+    notes TEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_declaration_number (declaration_number),
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS delivery_receipts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    receipt_number VARCHAR(100) UNIQUE NOT NULL,
+    shipment_id INT NOT NULL,
+    delivery_date DATETIME NOT NULL,
+    recipient_name VARCHAR(200) NOT NULL,
+    recipient_signature TEXT COMMENT 'Base64 signature image',
+    delivery_photo TEXT COMMENT 'Base64 delivery photo',
+    condition_notes TEXT,
+    damages_reported TEXT,
+    delivery_location VARCHAR(200),
+    gps_coordinates VARCHAR(50),
+    driver_id INT NULL,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE CASCADE,
+    FOREIGN KEY (driver_id) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    INDEX idx_receipt_number (receipt_number),
+    INDEX idx_shipment (shipment_id),
+    INDEX idx_delivery_date (delivery_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS document_access_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    document_id INT NOT NULL,
+    user_id INT NOT NULL,
+    action ENUM('view', 'download', 'edit', 'approve', 'reject') NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    INDEX idx_document (document_id),
+    INDEX idx_user (user_id),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================
+-- AI INTEGRATION TABLES
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    session_token VARCHAR(100) UNIQUE NOT NULL,
+    context_data JSON COMMENT 'Current conversation context',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_active TINYINT(1) DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user (user_id),
+    INDEX idx_session_token (session_token),
+    INDEX idx_last_activity (last_activity)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id INT NOT NULL,
+    message_type ENUM('user', 'assistant', 'system') NOT NULL,
+    message_content TEXT NOT NULL,
+    metadata JSON COMMENT 'Additional message metadata',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE,
+    INDEX idx_session (session_id),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_recommendations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    module ENUM('sws','psm','plt','alms','dtrs') NOT NULL,
+    recommendation_type VARCHAR(100) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    action_data JSON COMMENT 'Data needed to execute recommendation',
+    confidence_score DECIMAL(5,4) NOT NULL,
+    status ENUM('pending', 'accepted', 'rejected', 'executed') DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    executed_at TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user (user_id),
+    INDEX idx_module (module),
+    INDEX idx_status (status),
+    INDEX idx_confidence (confidence_score)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================
+-- SAMPLE DATA FOR NEW MODULES
+-- =============================================================
+
+-- Sample assets
+INSERT INTO assets (asset_code, asset_name, asset_type, category, manufacturer, model, purchase_date, purchase_cost, current_value, warehouse_id, status, created_by) VALUES
+('VH-001', 'Delivery Van #1', 'vehicle', 'Transportation', 'Toyota', 'Hiace 2024', '2024-01-15', 1500000.00, 1400000.00, 1, 'active', 1),
+('EQ-001', 'Forklift #1', 'equipment', 'Material Handling', 'Toyota', '8FG25', '2024-02-01', 800000.00, 750000.00, 1, 'active', 1),
+('IT-001', 'Server Rack #1', 'it_hardware', 'Computing', 'Dell', 'PowerEdge R740', '2024-03-01', 250000.00, 230000.00, 1, 'active', 1)
+ON DUPLICATE KEY UPDATE asset_name = VALUES(asset_name);
+
+-- Sample documents
+INSERT INTO documents (document_number, title, document_type, status, uploaded_by) VALUES
+('DOC-001', 'Standard Packing List Template', 'packing_list', 'approved', 1),
+('DOC-002', 'Delivery Receipt Template', 'delivery_receipt', 'approved', 1),
+('DOC-003', 'Customs Declaration Form', 'customs_declaration', 'draft', 1)
+ON DUPLICATE KEY UPDATE title = VALUES(title);
+
+-- Sample AI chat session
+INSERT INTO ai_chat_sessions (user_id, session_token, context_data) VALUES
+(1, 'session_admin_001', '{"module": "sws", "context": "inventory_management"}')
+ON DUPLICATE KEY UPDATE session_token = VALUES(session_token);
+
+-- Re-enable foreign key checks
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- =============================================================
+-- FINAL VERIFICATION AND COMPLETION MESSAGE
+-- =============================================================
+
+SELECT '🚀 DropIT Logistic System Database Schema Complete!' as status;
+SELECT 'All 5 modules (PSM, SWS, PLT, ALMS, DTLRS) with AI integration ready!' as message;
+SELECT 'Database includes enhanced tables, sample data, and AI capabilities.' as details;
 

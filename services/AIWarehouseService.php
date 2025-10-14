@@ -10,6 +10,7 @@
 
 require_once __DIR__ . '/../config/ai_config.php';
 
+if (!class_exists('AIWarehouseService')) {
 class AIWarehouseService {
     private $aiConfig;
     private $conn;
@@ -656,75 +657,7 @@ class AIWarehouseService {
             ];
         }
     }
-    
-    /**
-     * Suggest optimal storage location for a product
-     * Uses simple logic (can be enhanced with AI later)
-     */
-    public function suggestOptimalLocation($productId, $quantity, $warehouseId = 1) {
-        if (!$this->conn) {
-            $this->conn = db_conn();
-        }
-        
-        try {
-            // Get product info
-            $stmt = $this->conn->prepare("
-                SELECT p.*, c.name as category_name 
-                FROM products p 
-                LEFT JOIN categories c ON p.category_id = c.id 
-                WHERE p.id = :pid
-            ");
-            $stmt->execute([':pid' => $productId]);
-            $product = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$product) {
-                throw new Exception("Product not found");
-            }
-            
-            // Find best available location
-            // Priority: 1) Same category products, 2) Most space available, 3) Closest to receiving
-            $stmt = $this->conn->prepare("
-                SELECT 
-                    wl.id,
-                    wl.location_code,
-                    wl.capacity_units,
-                    wl.current_units,
-                    (wl.capacity_units - wl.current_units) as available_space,
-                    wz.zone_code,
-                    wz.zone_name,
-                    wz.zone_type,
-                    COUNT(DISTINCT il.product_id) as product_count
-                FROM warehouse_locations wl
-                JOIN warehouse_zones wz ON wl.zone_id = wz.id
-                LEFT JOIN inventory_locations il ON wl.id = il.location_id
-                WHERE wz.warehouse_id = :wid
-                    AND wz.zone_type = 'storage'
-                    AND wz.is_active = 1
-                    AND wl.is_active = 1
-                    AND (wl.capacity_units - wl.current_units) >= :qty
-                GROUP BY wl.id
-                ORDER BY 
-                    wz.zone_code ASC,
-                    (wl.capacity_units - wl.current_units) DESC
-                LIMIT 1
-            ");
-            $stmt->execute([':wid' => $warehouseId, ':qty' => $quantity]);
-            $location = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$location) {
-                throw new Exception("No available location with sufficient capacity");
-            }
-            
-            return [
-                'location_id' => $location['id'],
-                'location_code' => $location['location_code'],
-                'zone' => $location['zone_code'] . ' - ' . $location['zone_name'],
-                'available_space' => $location['available_space'],
-                'reason' => "Optimal location: {$location['zone_code']}-{$location['location_code']} with {$location['available_space']} units available"
-            ];
-            
-        } catch (Exception $e) {
-            throw new Exception("Location suggestion failed: " . $e->getMessage());
-        }
-    }
 }
+}
+
+?>

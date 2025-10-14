@@ -27,7 +27,23 @@ try {
                 $hasImageColumn = $columnsStmt->rowCount() > 0;
                 
                 // Include product_image, barcode_image but limit results to avoid memory issues
-                $stmt = $conn->prepare("SELECT SQL_CALC_FOUND_ROWS id, sku, name, description, category_id, unit_price, weight_kg, dimensions_cm, reorder_point, reorder_quantity, lead_time_days, is_active, barcode, barcode_image, product_image, image_url, created_at, updated_at FROM products WHERE name LIKE :q OR sku LIKE :q ORDER BY id DESC LIMIT :limit OFFSET :offset");
+                $stmt = $conn->prepare("
+                    SELECT SQL_CALC_FOUND_ROWS 
+                        p.id, p.sku, p.name, p.description, p.category_id, p.unit_price, 
+                        p.weight_kg, p.dimensions_cm, p.reorder_point, p.reorder_quantity, 
+                        p.lead_time_days, p.is_active, p.barcode, p.barcode_image, 
+                        p.product_image, p.image_url, p.created_at, p.updated_at,
+                        COALESCE(SUM(i.quantity), 0) as total_inventory,
+                        COUNT(DISTINCT CASE WHEN i.warehouse_id IS NOT NULL THEN i.warehouse_id END) as warehouse_count,
+                        c.name as category_name
+                    FROM products p
+                    LEFT JOIN inventory i ON p.id = i.product_id
+                    LEFT JOIN categories c ON p.category_id = c.id
+                    WHERE (p.name LIKE :q OR p.sku LIKE :q) AND p.is_active = 1
+                    GROUP BY p.id
+                    ORDER BY p.id DESC 
+                    LIMIT :limit OFFSET :offset
+                ");
                 $like = "%$q%";
                 $stmt->bindParam(':q', $like);
             } else {
@@ -36,8 +52,24 @@ try {
                 $columnsStmt->execute();
                 $hasImageColumn = $columnsStmt->rowCount() > 0;
                 
-                // Include product_image, barcode_image and reduce limit to manage memory
-                $stmt = $conn->prepare("SELECT id, sku, name, description, category_id, unit_price, weight_kg, dimensions_cm, reorder_point, reorder_quantity, lead_time_days, is_active, barcode, barcode_image, product_image, image_url, created_at, updated_at FROM products WHERE is_active = 1 ORDER BY created_at DESC LIMIT :limit OFFSET :offset");
+                // Include product_image, barcode_image, and inventory info
+                $stmt = $conn->prepare("
+                    SELECT 
+                        p.id, p.sku, p.name, p.description, p.category_id, p.unit_price, 
+                        p.weight_kg, p.dimensions_cm, p.reorder_point, p.reorder_quantity, 
+                        p.lead_time_days, p.is_active, p.barcode, p.barcode_image, 
+                        p.product_image, p.image_url, p.created_at, p.updated_at,
+                        COALESCE(SUM(i.quantity), 0) as total_inventory,
+                        COUNT(DISTINCT CASE WHEN i.warehouse_id IS NOT NULL THEN i.warehouse_id END) as warehouse_count,
+                        c.name as category_name
+                    FROM products p
+                    LEFT JOIN inventory i ON p.id = i.product_id
+                    LEFT JOIN categories c ON p.category_id = c.id
+                    WHERE p.is_active = 1 
+                    GROUP BY p.id
+                    ORDER BY p.created_at DESC 
+                    LIMIT :limit OFFSET :offset
+                ");
             }
             $stmt->bindParam(':limit', $limit, PDO::PARAM_INT);
             $stmt->bindParam(':offset', $offset, PDO::PARAM_INT);
