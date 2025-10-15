@@ -7,6 +7,31 @@ error_reporting(E_ALL);
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
+
+    // Simple test endpoint
+    if (isset($_GET['test'])) {
+        header('Content-Type: application/json');
+        
+        if ($_GET['test'] === 'auth') {
+            try {
+                $auth = require_auth();
+                echo json_encode(['status' => 'success', 'user_id' => $auth['id'], 'username' => $auth['username']]);
+            } catch (Exception $e) {
+                echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            }
+            exit;
+        }
+        
+        if ($_GET['test'] === 'db') {
+            try {
+                $conn = db_conn();
+                echo json_encode(['status' => 'success', 'message' => 'Database connection successful']);
+            } catch (Exception $e) {
+                echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+            }
+            exit;
+        }
+    }
 }
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');

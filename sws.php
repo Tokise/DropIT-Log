@@ -209,7 +209,7 @@
                           <th>SKU</th>
                           <th>Location</th>
                           <th>Quantity</th>
-                          <th>Reserved</th>
+                          <th>Ship</th>
                           <th>Available</th>
                           <th>Batch</th>
                           <th>Expiry</th>
@@ -456,9 +456,21 @@
 
     // Initialize the page
     document.addEventListener('DOMContentLoaded', function() {
-      loadLocationTree();
-      loadInventory();
-      loadProducts();
+      // Auto-initialize system first
+      fetch('api/auto_init.php')
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            console.log('System auto-initialized successfully');
+          }
+        })
+        .catch(error => console.warn('Auto-initialization warning:', error))
+        .finally(() => {
+          // Load page content regardless of initialization result
+          loadLocationTree();
+          loadInventory();
+          loadProducts();
+        });
       loadMovements();
       loadWarehouses();
       loadWarehousesList();
@@ -943,7 +955,7 @@
               ${item.locations_text ? `<br><small class="text-muted">${item.locations_text}</small>` : ''}
             </td>
             <td><span class="badge bg-primary">${item.quantity}</span></td>
-            <td><span class="badge bg-warning">${item.reserved_quantity || 0}</span></td>
+            <td><span class="badge bg-info">${item.delivered_shipments || 0}</span></td>
             <td><span class="badge bg-success">${item.available_quantity || item.quantity}</span></td>
             <td>${item.batch_number || '-'}</td>
             <td>${item.expiry_date || '-'}</td>

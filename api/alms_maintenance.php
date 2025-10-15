@@ -54,7 +54,7 @@ try {
 }
 
 function getMaintenance() {
-    global $conn;
+    $conn = db_conn();
     
     $page = (int)($_GET['page'] ?? 1);
     $limit = (int)($_GET['limit'] ?? 20);
@@ -147,7 +147,7 @@ function getMaintenance() {
 }
 
 function getMaintenanceDetails($id) {
-    global $conn;
+    $conn = db_conn();
     
     $stmt = $conn->prepare("
         SELECT 
@@ -176,7 +176,7 @@ function getMaintenanceDetails($id) {
 }
 
 function getDueMaintenance() {
-    global $conn;
+    $conn = db_conn();
     
     $days_ahead = (int)($_GET['days'] ?? 7);
     
@@ -202,7 +202,7 @@ function getDueMaintenance() {
 }
 
 function getMaintenanceCalendar() {
-    global $conn;
+    $conn = db_conn();
     
     $start_date = $_GET['start'] ?? date('Y-m-01');
     $end_date = $_GET['end'] ?? date('Y-m-t');
@@ -247,7 +247,8 @@ function getMaintenanceCalendar() {
 }
 
 function scheduleMaintenance() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -285,7 +286,7 @@ function scheduleMaintenance() {
         ':performed_by' => $data['performed_by'] ?? null,
         ':vendor' => $data['vendor'] ?? null,
         ':notes' => $data['notes'] ?? null,
-        ':created_by' => $auth['user_id']
+        ':created_by' => $auth['id']
     ]);
     
     $maintenanceId = $conn->lastInsertId();
@@ -318,7 +319,8 @@ function scheduleMaintenance() {
 }
 
 function completeMaintenance() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -351,7 +353,7 @@ function completeMaintenance() {
         $stmt->execute([
             ':completed_date' => $completedDate,
             ':actual_cost' => $data['actual_cost'] ?? 0,
-            ':performed_by' => $data['performed_by'] ?? $auth['user_id'],
+            ':performed_by' => $data['performed_by'] ?? $auth['id'],
             ':vendor' => $data['vendor'] ?? null,
             ':parts_replaced' => $partsReplaced,
             ':downtime_hours' => $data['downtime_hours'] ?? 0,
@@ -391,7 +393,8 @@ function completeMaintenance() {
 }
 
 function rescheduleMaintenance() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -420,7 +423,8 @@ function rescheduleMaintenance() {
 }
 
 function updateMaintenance() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -455,7 +459,8 @@ function updateMaintenance() {
 }
 
 function deleteMaintenance($id) {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     if (!$id) {
         json_err('Maintenance ID required', 400);

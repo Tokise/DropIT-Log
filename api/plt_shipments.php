@@ -1,5 +1,6 @@
 <?php
 require_once 'common.php';
+require_once 'warehouse_init.php';
 
 // Get request method and action
 $method = $_SERVER['REQUEST_METHOD'];
@@ -34,6 +35,8 @@ try {
                 updateShipmentStatus();
             } elseif ($action === 'assign_driver') {
                 assignDriver();
+            } elseif ($action === 'fix_delivered_inventory') {
+                fixDeliveredInventory();
             } else {
                 updateShipment();
             }
@@ -347,6 +350,19 @@ function updateShipmentStatus() {
     $conn->beginTransaction();
     
     try {
+        // Get current shipment info
+        $stmt = $conn->prepare("SELECT status, warehouse_id FROM shipments WHERE id = :id");
+        $stmt->execute([':id' => $data['shipment_id']]);
+        $shipment = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$shipment) {
+            json_err('Shipment not found', 404);
+        }
+        
+        $oldStatus = $shipment['status'];
+        $newStatus = $data['status'];
+        $warehouseId = $shipment['warehouse_id'];
+        
         // Update shipment status
         $stmt = $conn->prepare("
             UPDATE shipments 
@@ -358,9 +374,76 @@ function updateShipmentStatus() {
             WHERE id = :id
         ");
         $stmt->execute([
-            ':status' => $data['status'],
+            ':status' => $newStatus,
             ':id' => $data['shipment_id']
         ]);
+        
+        // Handle inventory changes based on status transitions
+        if ($newStatus === 'delivered' && $oldStatus !== 'delivered') {
+            // When delivered: reduce actual inventory and reserved quantity
+            $stmt = $conn->prepare("
+                UPDATE inventory i
+                JOIN shipment_items si ON i.product_id = si.product_id
+                SET i.quantity = GREATEST(0, i.quantity - si.quantity),
+                    i.reserved_quantity = GREATEST(0, i.reserved_quantity - si.quantity)
+                WHERE si.shipment_id = :shipment_id AND i.warehouse_id = :warehouse_id
+            ");
+            $stmt->execute([
+                ':shipment_id' => $data['shipment_id'],
+                ':warehouse_id' => $warehouseId
+            ]);
+            
+            // Also update inventory_locations
+            $stmt = $conn->prepare("
+                UPDATE inventory_locations il
+                JOIN shipment_items si ON il.product_id = si.product_id
+                SET il.quantity = GREATEST(0, il.quantity - si.quantity)
+                WHERE si.shipment_id = :shipment_id AND il.warehouse_id = :warehouse_id
+            ");
+            $stmt->execute([
+                ':shipment_id' => $data['shipment_id'],
+                ':warehouse_id' => $warehouseId
+            ]);
+            
+            // Log inventory transactions for delivered items
+            $stmt = $conn->prepare("
+                INSERT INTO inventory_transactions 
+                (product_id, warehouse_id, transaction_type, quantity, reference_type, reference_id, notes, performed_by)
+                SELECT si.product_id, :warehouse_id, 'shipment', -si.quantity, 'shipment', :shipment_id, 
+                       CONCAT('Inventory reduction for delivered shipment ', :shipment_id), :performed_by
+                FROM shipment_items si 
+                WHERE si.shipment_id = :shipment_id
+            ");
+            $stmt->execute([
+                ':warehouse_id' => $warehouseId,
+                ':shipment_id' => $data['shipment_id'],
+                ':performed_by' => $auth['id']
+            ]);
+        } elseif ($newStatus === 'cancelled' || $newStatus === 'returned') {
+            // When cancelled/returned: release reserved inventory
+            $stmt = $conn->prepare("
+                UPDATE inventory i
+                JOIN shipment_items si ON i.product_id = si.product_id
+                SET i.reserved_quantity = i.reserved_quantity - si.quantity
+                WHERE si.shipment_id = :shipment_id AND i.warehouse_id = :warehouse_id
+            ");
+            $stmt->execute([
+                ':shipment_id' => $data['shipment_id'],
+                ':warehouse_id' => $warehouseId
+            ]);
+        } elseif ($newStatus === 'failed' && $oldStatus !== 'failed') {
+            // When failed: release reserved inventory
+            $stmt = $conn->prepare("
+                UPDATE inventory i
+                JOIN shipment_items si ON i.product_id = si.product_id
+                SET i.reserved_quantity = i.reserved_quantity - si.quantity
+                WHERE si.shipment_id = :shipment_id AND i.warehouse_id = :warehouse_id
+            ");
+            $stmt->execute([
+                ':shipment_id' => $data['shipment_id'],
+                ':warehouse_id' => $warehouseId
+            ]);
+        }
         
         // Add tracking event
         $stmt = $conn->prepare("
@@ -372,11 +455,14 @@ function updateShipmentStatus() {
         ");
         $stmt->execute([
             ':shipment_id' => $data['shipment_id'],
-            ':status' => $data['status'],
+            ':status' => $newStatus,
             ':location' => $data['location'] ?? null,
-            ':description' => $data['notes'] ?? "Status updated to {$data['status']}",
+            ':description' => $data['notes'] ?? "Status updated to {$newStatus}",
             ':performed_by' => $auth['id']
         ]);
+        
+        // Sync inventory with locations after any status change
+        syncInventoryWithLocations($conn, null, $warehouseId);
         
         $conn->commit();
         json_ok(['message' => 'Status updated successfully']);
@@ -541,6 +627,96 @@ function deleteShipment($id) {
         
     } catch (Exception $e) {
         $conn->rollBack();
+        throw $e;
+    }
+}
+
+function fixDeliveredInventory() {
+    $conn = db_conn();
+    
+    try {
+        // Fix all delivered shipments that haven't had their inventory properly reduced
+        $stmt = $conn->prepare("
+            SELECT DISTINCT s.id, s.warehouse_id
+            FROM shipments s
+            JOIN shipment_items si ON s.id = si.shipment_id
+            WHERE s.status = 'delivered'
+        ");
+        $stmt->execute();
+        $deliveredShipments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $fixed = 0;
+        
+        foreach ($deliveredShipments as $shipment) {
+            // Check if inventory was already reduced for this shipment
+            $stmt = $conn->prepare("
+                SELECT COUNT(*) FROM inventory_transactions 
+                WHERE reference_type = 'shipment' 
+                AND reference_id = :shipment_id 
+                AND transaction_type = 'shipment'
+            ");
+            $stmt->execute([':shipment_id' => $shipment['id']]);
+            $alreadyProcessed = $stmt->fetchColumn();
+            
+            if (!$alreadyProcessed) {
+                // Reduce inventory for this delivered shipment
+                $stmt = $conn->prepare("
+                    UPDATE inventory i
+                    JOIN shipment_items si ON i.product_id = si.product_id
+                    SET i.quantity = GREATEST(0, i.quantity - si.quantity),
+                        i.reserved_quantity = GREATEST(0, i.reserved_quantity - si.quantity)
+                    WHERE si.shipment_id = :shipment_id AND i.warehouse_id = :warehouse_id
+                ");
+                $stmt->execute([
+                    ':shipment_id' => $shipment['id'],
+                    ':warehouse_id' => $shipment['warehouse_id']
+                ]);
+                
+                // Update inventory_locations
+                $stmt = $conn->prepare("
+                    UPDATE inventory_locations il
+                    JOIN shipment_items si ON il.product_id = si.product_id
+                    SET il.quantity = GREATEST(0, il.quantity - si.quantity)
+                    WHERE si.shipment_id = :shipment_id AND il.warehouse_id = :warehouse_id
+                ");
+                $stmt->execute([
+                    ':shipment_id' => $shipment['id'],
+                    ':warehouse_id' => $shipment['warehouse_id']
+                ]);
+                
+                // Log this transaction to prevent duplicate processing
+                // Get the user who created the shipment
+                $stmt = $conn->prepare("SELECT created_by FROM shipments WHERE id = :shipment_id");
+                $stmt->execute([':shipment_id' => $shipment['id']]);
+                $createdBy = $stmt->fetchColumn() ?: 1; // fallback to admin if not found
+                
+                $stmt = $conn->prepare("
+                    INSERT INTO inventory_transactions 
+                    (product_id, warehouse_id, transaction_type, quantity, reference_type, reference_id, notes, performed_by)
+                    SELECT si.product_id, :warehouse_id, 'shipment', -si.quantity, 'shipment', :shipment_id, 
+                           CONCAT('Retroactive inventory reduction for delivered shipment ', :shipment_id), :performed_by
+                    FROM shipment_items si 
+                    WHERE si.shipment_id = :shipment_id
+                ");
+                $stmt->execute([
+                    ':warehouse_id' => $shipment['warehouse_id'],
+                    ':shipment_id' => $shipment['id'],
+                    ':performed_by' => $createdBy
+                ]);
+                
+                $fixed++;
+            }
+        }
+        
+        // Sync inventory with locations
+        syncInventoryWithLocations($conn);
+        
+        json_ok([
+            'message' => "Fixed inventory for {$fixed} delivered shipments",
+            'fixed_count' => $fixed
+        ]);
+        
+    } catch (Exception $e) {
         throw $e;
     }
 }

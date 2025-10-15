@@ -111,25 +111,6 @@ CREATE TABLE IF NOT EXISTS warehouse_bins (
     INDEX idx_capacity (capacity_units, current_units)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Inventory Locations (links products to specific bins)
-CREATE TABLE IF NOT EXISTS inventory_locations (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    product_id INT NOT NULL,
-    bin_id INT NOT NULL,
-    quantity INT NOT NULL DEFAULT 0,
-    batch_number VARCHAR(50),
-    expiry_date DATE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-    FOREIGN KEY (bin_id) REFERENCES warehouse_bins(id) ON DELETE CASCADE,
-    INDEX idx_product (product_id),
-    INDEX idx_bin (bin_id),
-    INDEX idx_batch (batch_number),
-    INDEX idx_expiry (expiry_date),
-    UNIQUE KEY unique_product_bin_batch (product_id, bin_id, batch_number)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 -- Categories
 CREATE TABLE IF NOT EXISTS categories (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -170,6 +151,29 @@ CREATE TABLE IF NOT EXISTS products (
     INDEX idx_barcode (barcode),
     INDEX idx_barcode_image (barcode_image(100)),
     INDEX idx_product_image (product_image(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Inventory Locations (links products to specific bins)
+CREATE TABLE IF NOT EXISTS inventory_locations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT NOT NULL,
+    warehouse_id INT NOT NULL,
+    bin_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    batch_number VARCHAR(50),
+    expiry_date DATE,
+    last_moved_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE,
+    FOREIGN KEY (bin_id) REFERENCES warehouse_bins(id) ON DELETE CASCADE,
+    INDEX idx_product (product_id),
+    INDEX idx_warehouse (warehouse_id),
+    INDEX idx_bin (bin_id),
+    INDEX idx_batch (batch_number),
+    INDEX idx_expiry (expiry_date),
+    UNIQUE KEY unique_product_bin_batch (product_id, bin_id, batch_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Inventory
@@ -673,7 +677,7 @@ CREATE TABLE IF NOT EXISTS shipments (
     postal_code VARCHAR(20) NULL,
     country VARCHAR(100) DEFAULT 'Philippines',
     priority ENUM('standard','express','urgent') DEFAULT 'standard',
-    status ENUM('pending','picked','packed','in_transit','out_for_delivery','delivered','failed','returned') DEFAULT 'pending',
+    status ENUM('pending','picked','packed','in_transit','out_for_delivery','delivered','failed','returned','cancelled') DEFAULT 'pending',
     total_weight_kg DECIMAL(10,3) DEFAULT 0,
     total_value DECIMAL(12,2) DEFAULT 0,
     shipping_cost DECIMAL(12,2) DEFAULT 0,
@@ -1688,10 +1692,181 @@ ON DUPLICATE KEY UPDATE session_token = VALUES(session_token);
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================
+-- INVENTORY MANAGEMENT FIXES AND PROCEDURES
+-- =============================================================
+
+-- Fix for PLT inventory reservation system
+-- This ensures proper inventory tracking when shipments are created/updated
+
+DELIMITER $$
+
+-- Procedure to fix existing inventory reservations
+CREATE PROCEDURE IF NOT EXISTS FixInventoryReservations()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE v_product_id INT;
+    DECLARE v_warehouse_id INT;
+    DECLARE v_total_reserved INT;
+    
+    -- Cursor for products with active shipments
+    DECLARE reservation_cursor CURSOR FOR
+        SELECT si.product_id, s.warehouse_id, SUM(si.quantity) as total_reserved
+        FROM shipments s
+        JOIN shipment_items si ON s.id = si.shipment_id
+        WHERE s.status NOT IN ('delivered', 'cancelled', 'failed', 'returned')
+        GROUP BY si.product_id, s.warehouse_id;
+    
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    -- Reset all reserved quantities to 0
+    UPDATE inventory SET reserved_quantity = 0;
+    
+    -- Recalculate reservations based on active shipments
+    OPEN reservation_cursor;
+    
+    read_loop: LOOP
+        FETCH reservation_cursor INTO v_product_id, v_warehouse_id, v_total_reserved;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        -- Update or insert inventory record with correct reservation
+        INSERT INTO inventory (product_id, warehouse_id, quantity, reserved_quantity)
+        VALUES (v_product_id, v_warehouse_id, 0, v_total_reserved)
+        ON DUPLICATE KEY UPDATE 
+            reserved_quantity = v_total_reserved;
+    END LOOP;
+    
+    CLOSE reservation_cursor;
+END$$
+
+-- Procedure to setup default reorder points for products
+CREATE PROCEDURE IF NOT EXISTS SetupReorderPoints()
+BEGIN
+    -- Update products without reorder points
+    UPDATE products 
+    SET 
+        reorder_point = CASE 
+            WHEN reorder_point IS NULL OR reorder_point <= 0 THEN 10 
+            ELSE reorder_point 
+        END,
+        reorder_quantity = CASE 
+            WHEN reorder_quantity IS NULL OR reorder_quantity <= 0 THEN 30 
+            ELSE reorder_quantity 
+        END,
+        lead_time_days = CASE 
+            WHEN lead_time_days IS NULL OR lead_time_days <= 0 THEN 7 
+            ELSE lead_time_days 
+        END
+    WHERE is_active = 1;
+END$$
+
+-- Trigger to handle inventory updates when shipment status changes
+CREATE TRIGGER IF NOT EXISTS shipment_status_inventory_update
+AFTER UPDATE ON shipments
+FOR EACH ROW
+BEGIN
+    -- Only process if status actually changed
+    IF OLD.status != NEW.status THEN
+        
+        -- When shipment is delivered: reduce both quantity and reserved_quantity
+        IF NEW.status = 'delivered' AND OLD.status != 'delivered' THEN
+            UPDATE inventory i
+            JOIN shipment_items si ON i.product_id = si.product_id
+            SET 
+                i.quantity = GREATEST(0, i.quantity - si.quantity),
+                i.reserved_quantity = GREATEST(0, i.reserved_quantity - si.quantity)
+            WHERE si.shipment_id = NEW.id AND i.warehouse_id = NEW.warehouse_id;
+            
+        -- When shipment is cancelled/returned/failed: release reserved quantity
+        ELSEIF NEW.status IN ('cancelled', 'returned', 'failed') AND OLD.status NOT IN ('cancelled', 'returned', 'failed') THEN
+            UPDATE inventory i
+            JOIN shipment_items si ON i.product_id = si.product_id
+            SET i.reserved_quantity = GREATEST(0, i.reserved_quantity - si.quantity)
+            WHERE si.shipment_id = NEW.id AND i.warehouse_id = NEW.warehouse_id;
+            
+        -- When shipment goes from cancelled/returned/failed back to active: re-reserve
+        ELSEIF OLD.status IN ('cancelled', 'returned', 'failed') AND NEW.status NOT IN ('cancelled', 'returned', 'failed', 'delivered') THEN
+            UPDATE inventory i
+            JOIN shipment_items si ON i.product_id = si.product_id
+            SET i.reserved_quantity = i.reserved_quantity + si.quantity
+            WHERE si.shipment_id = NEW.id AND i.warehouse_id = NEW.warehouse_id;
+        END IF;
+    END IF;
+END$$
+
+-- Trigger to reserve inventory when new shipments are created
+CREATE TRIGGER IF NOT EXISTS shipment_create_inventory_reserve
+AFTER INSERT ON shipment_items
+FOR EACH ROW
+BEGIN
+    DECLARE v_warehouse_id INT;
+    
+    -- Get warehouse_id from shipment
+    SELECT warehouse_id INTO v_warehouse_id 
+    FROM shipments 
+    WHERE id = NEW.shipment_id;
+    
+    -- Reserve inventory for this item
+    INSERT INTO inventory (product_id, warehouse_id, quantity, reserved_quantity)
+    VALUES (NEW.product_id, v_warehouse_id, 0, NEW.quantity)
+    ON DUPLICATE KEY UPDATE 
+        reserved_quantity = reserved_quantity + NEW.quantity;
+END$$
+
+DELIMITER ;
+
+-- =============================================================
+-- DATA FIXES AND INITIALIZATION
+-- =============================================================
+
+-- Run the inventory fix procedures
+CALL FixInventoryReservations();
+CALL SetupReorderPoints();
+
+-- Insert default warehouse if none exists
+INSERT IGNORE INTO warehouses (id, name, code, address, city, manager_name, country) 
+VALUES (1, 'Main Warehouse', 'WH001', 'Main Street', 'Manila', 'Warehouse Manager', 'Philippines');
+
+-- Insert default categories if none exist
+INSERT IGNORE INTO categories (id, name, description) VALUES 
+(1, 'General', 'General products'),
+(2, 'Electronics', 'Electronic items'),
+(3, 'Consumables', 'Consumable items');
+
+-- Add missing columns to existing tables (for database upgrades)
+ALTER TABLE products 
+ADD COLUMN IF NOT EXISTS weight_kg DECIMAL(10,3) AFTER unit_price,
+ADD COLUMN IF NOT EXISTS dimensions_cm VARCHAR(50) AFTER weight_kg,
+ADD COLUMN IF NOT EXISTS reorder_point INT NOT NULL DEFAULT 10 AFTER dimensions_cm,
+ADD COLUMN IF NOT EXISTS reorder_quantity INT NOT NULL DEFAULT 50 AFTER reorder_point,
+ADD COLUMN IF NOT EXISTS lead_time_days INT DEFAULT 7 AFTER reorder_quantity,
+ADD COLUMN IF NOT EXISTS barcode_image LONGTEXT NULL COMMENT 'Base64 encoded barcode image' AFTER barcode,
+ADD COLUMN IF NOT EXISTS product_image LONGTEXT NULL COMMENT 'Base64 encoded product image' AFTER barcode_image;
+
+-- Add missing columns to inventory table
+ALTER TABLE inventory 
+ADD COLUMN IF NOT EXISTS reserved_quantity INT NOT NULL DEFAULT 0 COMMENT 'Items allocated but not yet shipped' AFTER quantity,
+ADD COLUMN IF NOT EXISTS available_quantity INT GENERATED ALWAYS AS (quantity - reserved_quantity) STORED AFTER reserved_quantity;
+
+-- Add missing status to shipments table
+ALTER TABLE shipments 
+MODIFY COLUMN status ENUM('pending','picked','packed','in_transit','out_for_delivery','delivered','failed','returned','cancelled') DEFAULT 'pending';
+
+-- Update existing products to ensure they have proper reorder settings
+UPDATE products 
+SET 
+    reorder_point = CASE WHEN reorder_point IS NULL OR reorder_point <= 0 THEN 10 ELSE reorder_point END,
+    reorder_quantity = CASE WHEN reorder_quantity IS NULL OR reorder_quantity <= 0 THEN 30 ELSE reorder_quantity END,
+    lead_time_days = CASE WHEN lead_time_days IS NULL OR lead_time_days <= 0 THEN 7 ELSE lead_time_days END
+WHERE is_active = 1;
+
+-- =============================================================
 -- FINAL VERIFICATION AND COMPLETION MESSAGE
 -- =============================================================
 
 SELECT '🚀 DropIT Logistic System Database Schema Complete!' as status;
 SELECT 'All 5 modules (PSM, SWS, PLT, ALMS, DTLRS) with AI integration ready!' as message;
-SELECT 'Database includes enhanced tables, sample data, and AI capabilities.' as details;
+SELECT 'Database includes enhanced tables, sample data, AI capabilities, and inventory fixes.' as details;
+SELECT 'Inventory reservation system fixed - PLT shipments now properly reserve/release inventory.' as inventory_status;
 

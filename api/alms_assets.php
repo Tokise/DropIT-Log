@@ -48,7 +48,7 @@ try {
 }
 
 function getAssets() {
-    global $conn;
+    $conn = db_conn();
     
     $page = (int)($_GET['page'] ?? 1);
     $limit = (int)($_GET['limit'] ?? 20);
@@ -127,7 +127,7 @@ function getAssets() {
 }
 
 function getAssetDetails($id) {
-    global $conn;
+    $conn = db_conn();
     
     $stmt = $conn->prepare("
         SELECT 
@@ -183,7 +183,7 @@ function getAssetDetails($id) {
 }
 
 function scanAsset($code) {
-    global $conn;
+    $conn = db_conn();
     
     if (!$code) {
         json_err('Asset code required', 400);
@@ -210,7 +210,8 @@ function scanAsset($code) {
 }
 
 function createAsset() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -292,7 +293,7 @@ function createAsset() {
         ':maintenance_interval_days' => $maintenanceInterval,
         ':notes' => $data['notes'] ?? null,
         ':photo_url' => $data['photo_url'] ?? null,
-        ':created_by' => $auth['user_id']
+        ':created_by' => $auth['id']
     ]);
     
     $assetId = $conn->lastInsertId();
@@ -317,7 +318,8 @@ function createAsset() {
 }
 
 function updateAssetStatus() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -344,7 +346,8 @@ function updateAssetStatus() {
 }
 
 function transferAsset() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -380,7 +383,7 @@ function transferAsset() {
             ':reason' => $data['reason'] ?? null,
             ':status' => 'pending',
             ':notes' => $data['notes'] ?? null,
-            ':created_by' => $auth['user_id']
+            ':created_by' => $auth['id']
         ]);
         
         $transferId = $conn->lastInsertId();
@@ -393,7 +396,7 @@ function transferAsset() {
                 WHERE id = :id
             ");
             $stmt->execute([
-                ':approved_by' => $auth['user_id'],
+                ':approved_by' => $auth['id'],
                 ':id' => $transferId
             ]);
             
@@ -437,7 +440,8 @@ function transferAsset() {
 }
 
 function updateAsset() {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     $data = json_decode(file_get_contents('php://input'), true);
     
@@ -474,7 +478,8 @@ function updateAsset() {
 }
 
 function deleteAsset($id) {
-    global $conn, $auth;
+    $conn = db_conn();
+    $auth = require_auth();
     
     if (!$id) {
         json_err('Asset ID required', 400);

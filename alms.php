@@ -7,6 +7,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
 </head>
 <body>
   <main class="container-fluid py-3">
@@ -211,42 +212,174 @@
       loadMaintenance();
     });
 
-    document.getElementById('createAssetBtn').addEventListener('click', () => {
-      const name = prompt('Asset Name:');
-      if (!name) return;
-      const type = prompt('Asset Type (vehicle/equipment/machinery/it_hardware/furniture):');
-      if (!type) return;
-      
-      createAsset({
-        asset_name: name,
-        asset_type: type,
-        category: 'General',
-        status: 'active',
-        purchase_date: new Date().toISOString().split('T')[0],
-        purchase_cost: 0
+    document.getElementById('createAssetBtn').addEventListener('click', async () => {
+      const { value: formValues } = await Swal.fire({
+        title: 'Create New Asset',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">Asset Name *</label>
+              <input id="swal-name" type="text" class="form-control" placeholder="Enter asset name" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Asset Type *</label>
+              <select id="swal-type" class="form-select" required>
+                <option value="">Select type</option>
+                <option value="vehicle">Vehicle</option>
+                <option value="equipment">Equipment</option>
+                <option value="machinery">Machinery</option>
+                <option value="it_hardware">IT Hardware</option>
+                <option value="furniture">Furniture</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Category</label>
+              <input id="swal-category" type="text" class="form-control" placeholder="General" value="General">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Purchase Cost</label>
+              <input id="swal-cost" type="number" class="form-control" placeholder="0.00" step="0.01">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Serial Number</label>
+              <input id="swal-serial" type="text" class="form-control" placeholder="Enter serial number">
+            </div>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Create Asset',
+        cancelButtonText: 'Cancel',
+        preConfirm: () => {
+          const name = document.getElementById('swal-name').value;
+          const type = document.getElementById('swal-type').value;
+          
+          if (!name || !type) {
+            Swal.showValidationMessage('Please fill in required fields');
+            return false;
+          }
+          
+          return {
+            asset_name: name,
+            asset_type: type,
+            category: document.getElementById('swal-category').value || 'General',
+            purchase_cost: parseFloat(document.getElementById('swal-cost').value) || 0,
+            serial_number: document.getElementById('swal-serial').value,
+            status: 'active',
+            purchase_date: new Date().toISOString().split('T')[0]
+          };
+        }
+      });
+
+      if (formValues) {
+        createAsset(formValues);
+      }
+    });
+
+    document.getElementById('scanQRBtn').addEventListener('click', async () => {
+      const { value: scanMethod } = await Swal.fire({
+        title: 'Scan Asset Code',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <button id="camera-scan-btn" class="btn btn-primary w-100 mb-2">
+                <i class="fas fa-camera me-2"></i>Use Camera
+              </button>
+              <button id="manual-input-btn" class="btn btn-outline-secondary w-100">
+                <i class="fas fa-keyboard me-2"></i>Manual Input
+              </button>
+            </div>
+            <div id="camera-container" class="d-none">
+              <video id="camera-preview" class="w-100" style="max-height: 300px;" autoplay></video>
+              <div class="mt-2 text-center">
+                <button id="stop-camera-btn" class="btn btn-sm btn-danger">Stop Camera</button>
+              </div>
+            </div>
+            <div id="manual-container" class="d-none">
+              <input id="manual-code-input" type="text" class="form-control" placeholder="Enter asset code, barcode, or QR code">
+            </div>
+          </div>
+        `,
+        showConfirmButton: false,
+        showCancelButton: true,
+        cancelButtonText: 'Close',
+        didOpen: () => {
+          setupBarcodeScanner();
+        },
+        willClose: () => {
+          stopCamera();
+        }
       });
     });
 
-    document.getElementById('scanQRBtn').addEventListener('click', () => {
-      const code = prompt('Enter QR/Barcode:');
-      if (code) scanAsset(code);
-    });
-
-    document.getElementById('scheduleMaintenanceBtn').addEventListener('click', () => {
-      const assetId = prompt('Asset ID:');
-      if (!assetId) return;
-      const title = prompt('Maintenance Title:');
-      if (!title) return;
-      const date = prompt('Scheduled Date (YYYY-MM-DD):');
-      if (!date) return;
-      
-      scheduleMaintenance({
-        asset_id: parseInt(assetId),
-        maintenance_type: 'preventive',
-        title: title,
-        scheduled_date: date,
-        priority: 'medium'
+    document.getElementById('scheduleMaintenanceBtn').addEventListener('click', async () => {
+      const { value: formValues } = await Swal.fire({
+        title: 'Schedule Maintenance',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">Asset ID *</label>
+              <input id="swal-asset-id" type="number" class="form-control" placeholder="Enter asset ID" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Maintenance Title *</label>
+              <input id="swal-title" type="text" class="form-control" placeholder="e.g., Monthly inspection" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Maintenance Type</label>
+              <select id="swal-type" class="form-select">
+                <option value="preventive">Preventive</option>
+                <option value="corrective">Corrective</option>
+                <option value="emergency">Emergency</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Scheduled Date *</label>
+              <input id="swal-date" type="date" class="form-control" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Priority</label>
+              <select id="swal-priority" class="form-select">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Estimated Cost</label>
+              <input id="swal-cost" type="number" class="form-control" placeholder="0.00" step="0.01">
+            </div>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Schedule',
+        cancelButtonText: 'Cancel',
+        preConfirm: () => {
+          const assetId = document.getElementById('swal-asset-id').value;
+          const title = document.getElementById('swal-title').value;
+          const date = document.getElementById('swal-date').value;
+          
+          if (!assetId || !title || !date) {
+            Swal.showValidationMessage('Please fill in required fields');
+            return false;
+          }
+          
+          return {
+            asset_id: parseInt(assetId),
+            title: title,
+            maintenance_type: document.getElementById('swal-type').value,
+            scheduled_date: date,
+            priority: document.getElementById('swal-priority').value,
+            estimated_cost: parseFloat(document.getElementById('swal-cost').value) || 0
+          };
+        }
       });
+
+      if (formValues) {
+        scheduleMaintenance(formValues);
+      }
     });
 
     // Asset Actions
@@ -261,19 +394,7 @@
       
       if (maintenanceBtn) {
         const assetId = parseInt(maintenanceBtn.getAttribute('data-maintenance'));
-        const title = prompt('Maintenance Title:');
-        if (title) {
-          const date = prompt('Scheduled Date (YYYY-MM-DD):');
-          if (date) {
-            scheduleMaintenance({
-              asset_id: assetId,
-              maintenance_type: 'preventive',
-              title: title,
-              scheduled_date: date,
-              priority: 'medium'
-            });
-          }
-        }
+        scheduleMaintenanceForAsset(assetId);
       }
     });
 
@@ -289,10 +410,7 @@
       
       if (rescheduleBtn) {
         const maintenanceId = parseInt(rescheduleBtn.getAttribute('data-reschedule'));
-        const newDate = prompt('New Date (YYYY-MM-DD):');
-        if (newDate) {
-          rescheduleMaintenance(maintenanceId, newDate);
-        }
+        rescheduleMaintenanceWithSwal(maintenanceId);
       }
     });
 
@@ -310,57 +428,246 @@
       maintenancePage++; loadMaintenance();
     });
 
+    // Barcode Scanner Functions
+    let codeReader = null;
+    let currentStream = null;
+
+    function setupBarcodeScanner() {
+      document.getElementById('camera-scan-btn').addEventListener('click', startCamera);
+      document.getElementById('manual-input-btn').addEventListener('click', showManualInput);
+      document.getElementById('stop-camera-btn').addEventListener('click', stopCamera);
+      
+      // Handle manual input
+      document.getElementById('manual-code-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          const code = e.target.value.trim();
+          if (code) {
+            Swal.close();
+            scanAsset(code);
+          }
+        }
+      });
+    }
+
+    async function startCamera() {
+      try {
+        const cameraContainer = document.getElementById('camera-container');
+        const videoElement = document.getElementById('camera-preview');
+        
+        cameraContainer.classList.remove('d-none');
+        
+        // Initialize ZXing code reader
+        codeReader = new ZXing.BrowserMultiFormatReader();
+        
+        // Get camera stream
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment' } // Use back camera if available
+        });
+        
+        currentStream = stream;
+        videoElement.srcObject = stream;
+        
+        // Start decoding
+        codeReader.decodeFromVideoDevice(null, videoElement, (result, err) => {
+          if (result) {
+            stopCamera();
+            Swal.close();
+            scanAsset(result.text);
+          }
+        });
+        
+      } catch (error) {
+        console.error('Camera error:', error);
+        Swal.fire('Camera Error', 'Unable to access camera. Please use manual input.', 'error');
+        showManualInput();
+      }
+    }
+
+    function showManualInput() {
+      document.getElementById('camera-container').classList.add('d-none');
+      document.getElementById('manual-container').classList.remove('d-none');
+      document.getElementById('manual-code-input').focus();
+    }
+
+    function stopCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+        currentStream = null;
+      }
+      if (codeReader) {
+        codeReader.reset();
+        codeReader = null;
+      }
+    }
+
     // API Functions
     async function createAsset(data) {
       try {
         const res = await Api.send('api/alms_assets.php', 'POST', data);
-        alert(`Asset created! Code: ${res.data.asset_code}`);
+        await Swal.fire({
+          title: 'Success!',
+          html: `Asset created successfully!<br><strong>Asset Code:</strong> ${res.data.asset_code}`,
+          icon: 'success',
+          confirmButtonText: 'OK'
+        });
         loadAssets();
       } catch (e) {
-        alert('Error creating asset');
+        Swal.fire('Error', 'Failed to create asset: ' + e.message, 'error');
       }
     }
 
     async function scanAsset(code) {
       try {
+        Swal.fire({
+          title: 'Scanning...',
+          text: `Looking for asset: ${code}`,
+          allowOutsideClick: false,
+          didOpen: () => {
+            Swal.showLoading();
+          }
+        });
+        
         const res = await Api.get(`api/alms_assets.php?action=scan&code=${code}`);
+        Swal.close();
+        
+        await Swal.fire({
+          title: 'Asset Found!',
+          html: `
+            <div class="text-start">
+              <p><strong>Asset Code:</strong> ${res.data.asset_code}</p>
+              <p><strong>Name:</strong> ${res.data.asset_name}</p>
+              <p><strong>Type:</strong> ${res.data.asset_type}</p>
+              <p><strong>Status:</strong> <span class="badge bg-success">${res.data.status}</span></p>
+            </div>
+          `,
+          icon: 'success',
+          confirmButtonText: 'View Details'
+        });
+        
         viewAssetDetails(res.data.id);
       } catch (e) {
-        alert('Asset not found');
+        Swal.fire({
+          title: 'Asset Not Found',
+          text: `No asset found with code: ${code}`,
+          icon: 'warning',
+          confirmButtonText: 'OK'
+        });
       }
     }
 
     async function viewAssetDetails(assetId) {
       try {
+        // Show loading
+        Swal.fire({
+          title: 'Loading Asset Details...',
+          allowOutsideClick: false,
+          didOpen: () => {
+            Swal.showLoading();
+          }
+        });
+
         const res = await Api.get(`api/alms_assets.php?id=${assetId}`);
         const asset = res.data;
         
-        document.getElementById('assetDetailCard').classList.remove('d-none');
-        document.getElementById('assetDetailId').textContent = `#${asset.id}`;
+        // Close loading and show asset details
+        Swal.close();
         
-        document.getElementById('assetDetail').innerHTML = `
-          <div class="col-md-4"><div class="text-muted small">Asset Code</div><div><strong>${asset.asset_code}</strong></div></div>
-          <div class="col-md-4"><div class="text-muted small">Name</div><div>${asset.asset_name}</div></div>
-          <div class="col-md-4"><div class="text-muted small">Type</div><div>${asset.asset_type}</div></div>
-          <div class="col-md-4"><div class="text-muted small">Status</div><div><span class="badge text-bg-success">${asset.status}</span></div></div>
-          <div class="col-md-4"><div class="text-muted small">Location</div><div>${asset.location || 'Not assigned'}</div></div>
-          <div class="col-md-4"><div class="text-muted small">Purchase Cost</div><div>₱${asset.purchase_cost?.toLocaleString() || '0'}</div></div>
-          <div class="col-md-6"><div class="text-muted small">Manufacturer</div><div>${asset.manufacturer || 'N/A'}</div></div>
-          <div class="col-md-6"><div class="text-muted small">Model</div><div>${asset.model || 'N/A'}</div></div>
-        `;
-        
-        // Load maintenance history
+        const statusColor = {
+          'active': 'success',
+          'maintenance': 'warning', 
+          'retired': 'secondary',
+          'disposed': 'danger'
+        }[asset.status] || 'secondary';
+
         const history = asset.maintenance_history || [];
-        document.getElementById('maintenanceHistoryRows').innerHTML = history.map(h => `<tr>
-          <td>${new Date(h.scheduled_date).toLocaleDateString()}</td>
-          <td>${h.maintenance_type}</td>
-          <td><span class="badge text-bg-${h.status === 'completed' ? 'success' : 'warning'}">${h.status}</span></td>
-          <td>₱${h.cost?.toLocaleString() || '0'}</td>
-          <td><small>${h.notes || ''}</small></td>
-        </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No maintenance history</td></tr>';
+        const maintenanceHistoryHtml = history.length > 0 
+          ? history.map(h => `
+              <tr>
+                <td>${new Date(h.scheduled_date).toLocaleDateString()}</td>
+                <td><span class="badge bg-info">${h.maintenance_type}</span></td>
+                <td><span class="badge bg-${h.status === 'completed' ? 'success' : 'warning'}">${h.status}</span></td>
+                <td>₱${h.cost?.toLocaleString() || '0'}</td>
+                <td><small>${h.notes || '-'}</small></td>
+              </tr>
+            `).join('')
+          : '<tr><td colspan="5" class="text-center text-muted">No maintenance history</td></tr>';
+
+        await Swal.fire({
+          title: `Asset Details - ${asset.asset_code}`,
+          html: `
+            <div class="text-start">
+              <div class="row g-3 mb-4">
+                <div class="col-md-6">
+                  <div class="card h-100">
+                    <div class="card-header bg-primary text-white">
+                      <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>Basic Information</h6>
+                    </div>
+                    <div class="card-body">
+                      <div class="row g-2">
+                        <div class="col-12"><strong>Name:</strong> ${asset.asset_name}</div>
+                        <div class="col-6"><strong>Type:</strong> ${asset.asset_type}</div>
+                        <div class="col-6"><strong>Status:</strong> <span class="badge bg-${statusColor}">${asset.status}</span></div>
+                        <div class="col-6"><strong>Category:</strong> ${asset.category || 'N/A'}</div>
+                        <div class="col-6"><strong>Serial:</strong> ${asset.serial_number || 'N/A'}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="card h-100">
+                    <div class="card-header bg-success text-white">
+                      <h6 class="mb-0"><i class="fas fa-dollar-sign me-2"></i>Financial Information</h6>
+                    </div>
+                    <div class="card-body">
+                      <div class="row g-2">
+                        <div class="col-12"><strong>Purchase Cost:</strong> ₱${asset.purchase_cost?.toLocaleString() || '0'}</div>
+                        <div class="col-12"><strong>Current Value:</strong> ₱${asset.current_value?.toLocaleString() || '0'}</div>
+                        <div class="col-12"><strong>Purchase Date:</strong> ${asset.purchase_date ? new Date(asset.purchase_date).toLocaleDateString() : 'N/A'}</div>
+                        <div class="col-12"><strong>Warranty:</strong> ${asset.warranty_expiry ? new Date(asset.warranty_expiry).toLocaleDateString() : 'N/A'}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="card">
+                <div class="card-header bg-warning text-dark">
+                  <h6 class="mb-0"><i class="fas fa-tools me-2"></i>Maintenance History</h6>
+                </div>
+                <div class="card-body p-0">
+                  <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Date</th>
+                          <th>Type</th>
+                          <th>Status</th>
+                          <th>Cost</th>
+                          <th>Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${maintenanceHistoryHtml}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `,
+          width: '800px',
+          showCancelButton: true,
+          confirmButtonText: '<i class="fas fa-tools me-2"></i>Schedule Maintenance',
+          cancelButtonText: 'Close',
+          confirmButtonColor: '#28a745'
+        }).then((result) => {
+          if (result.isConfirmed) {
+            scheduleMaintenanceForAsset(assetId);
+          }
+        });
         
       } catch (e) {
-        Swal.fire('Error', 'Failed to load asset details', 'error');
+        Swal.fire('Error', 'Failed to load asset details: ' + e.message, 'error');
       }
     }
 
@@ -416,11 +723,120 @@
       }
     }
 
-    async function rescheduleMaintenance(maintenanceId, newDate) {
+    async function scheduleMaintenanceForAsset(assetId) {
+      const { value: formValues } = await Swal.fire({
+        title: 'Schedule Maintenance',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">Asset ID</label>
+              <input id="swal-asset-id" type="number" class="form-control" value="${assetId}" readonly>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Maintenance Title *</label>
+              <input id="swal-title" type="text" class="form-control" placeholder="e.g., Monthly inspection" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Maintenance Type</label>
+              <select id="swal-type" class="form-select">
+                <option value="preventive" selected>Preventive</option>
+                <option value="corrective">Corrective</option>
+                <option value="emergency">Emergency</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Scheduled Date *</label>
+              <input id="swal-date" type="date" class="form-control" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Priority</label>
+              <select id="swal-priority" class="form-select">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Estimated Cost</label>
+              <input id="swal-cost" type="number" class="form-control" placeholder="0.00" step="0.01">
+            </div>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Schedule',
+        cancelButtonText: 'Cancel',
+        preConfirm: () => {
+          const title = document.getElementById('swal-title').value;
+          const date = document.getElementById('swal-date').value;
+          
+          if (!title || !date) {
+            Swal.showValidationMessage('Please fill in required fields');
+            return false;
+          }
+          
+          return {
+            asset_id: assetId,
+            title: title,
+            maintenance_type: document.getElementById('swal-type').value,
+            scheduled_date: date,
+            priority: document.getElementById('swal-priority').value,
+            estimated_cost: parseFloat(document.getElementById('swal-cost').value) || 0
+          };
+        }
+      });
+
+      if (formValues) {
+        scheduleMaintenance(formValues);
+      }
+    }
+
+    async function rescheduleMaintenanceWithSwal(maintenanceId) {
+      const { value: newDate } = await Swal.fire({
+        title: 'Reschedule Maintenance',
+        html: `
+          <div class="text-start">
+            <div class="mb-3">
+              <label class="form-label">New Scheduled Date *</label>
+              <input id="swal-new-date" type="date" class="form-control" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Reason for Rescheduling</label>
+              <textarea id="swal-reason" class="form-control" rows="3" placeholder="Optional reason for rescheduling..."></textarea>
+            </div>
+          </div>
+        `,
+        focusConfirm: false,
+        showCancelButton: true,
+        confirmButtonText: 'Reschedule',
+        cancelButtonText: 'Cancel',
+        preConfirm: () => {
+          const date = document.getElementById('swal-new-date').value;
+          
+          if (!date) {
+            Swal.showValidationMessage('Please select a new date');
+            return false;
+          }
+          
+          return {
+            new_date: date,
+            reason: document.getElementById('swal-reason').value
+          };
+        }
+      });
+
+      if (newDate) {
+        rescheduleMaintenance(maintenanceId, newDate.new_date, newDate.reason);
+      }
+    }
+
+    async function rescheduleMaintenance(maintenanceId, newDate, reason = null) {
       try {
         await Api.send('api/alms_maintenance.php?action=reschedule', 'PUT', {
           maintenance_id: maintenanceId,
-          new_date: newDate
+          new_date: newDate,
+          reason: reason
         });
         
         Swal.fire('Success', 'Maintenance rescheduled successfully', 'success');
@@ -430,9 +846,152 @@
       }
     }
 
-    // Initialize
-    loadAssets();
-    loadMaintenance();
+    // Delete Asset Function
+    async function deleteAsset(assetId) {
+      const result = await Swal.fire({
+        title: 'Delete Asset?',
+        text: 'This action cannot be undone. The asset will be marked as disposed.',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#d33',
+        cancelButtonColor: '#3085d6',
+        confirmButtonText: 'Yes, delete it!',
+        cancelButtonText: 'Cancel'
+      });
+
+      if (result.isConfirmed) {
+        try {
+          await Api.send(`api/alms_assets.php?id=${assetId}`, 'DELETE');
+          Swal.fire('Deleted!', 'Asset has been marked as disposed.', 'success');
+          loadAssets();
+        } catch (e) {
+          Swal.fire('Error', 'Failed to delete asset: ' + e.message, 'error');
+        }
+      }
+    }
+
+    // Enhanced Loading Functions
+    async function loadAssets() {
+      try {
+        document.getElementById('assetsRows').innerHTML = '<tr><td colspan="7" class="text-center"><div class="spinner-border spinner-border-sm me-2"></div>Loading assets...</td></tr>';
+        
+        const params = new URLSearchParams({
+          page: assetsPage,
+          limit: 10,
+          ...assetFilters
+        });
+        
+        const response = await Api.get(`api/alms_assets.php?${params}`);
+        const assets = response.data.assets || [];
+        const pagination = response.data.pagination || {};
+        
+        if (assets.length === 0) {
+          document.getElementById('assetsRows').innerHTML = '<tr><td colspan="7" class="text-center text-muted">No assets found</td></tr>';
+          return;
+        }
+        
+        document.getElementById('assetsRows').innerHTML = assets.map(asset => `
+          <tr>
+            <td><code>${asset.asset_code}</code></td>
+            <td>${asset.asset_name}</td>
+            <td><span class="badge bg-info">${asset.asset_type}</span></td>
+            <td><span class="badge bg-${asset.status === 'active' ? 'success' : asset.status === 'maintenance' ? 'warning' : 'secondary'}">${asset.status}</span></td>
+            <td>${asset.location || asset.warehouse_name || 'Not assigned'}</td>
+            <td>${asset.next_maintenance_date ? new Date(asset.next_maintenance_date).toLocaleDateString() : 'Not scheduled'}</td>
+            <td>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-primary" data-view-asset="${asset.id}" title="View Details">
+                  <i class="fas fa-eye"></i>
+                </button>
+                <button class="btn btn-outline-success" data-maintenance="${asset.id}" title="Schedule Maintenance">
+                  <i class="fas fa-tools"></i>
+                </button>
+                <button class="btn btn-outline-danger" onclick="deleteAsset(${asset.id})" title="Delete Asset">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+        
+        document.getElementById('assetsMeta').textContent = `Page ${pagination.page} of ${pagination.pages} (${pagination.total} total)`;
+        
+      } catch (error) {
+        console.error('Error loading assets:', error);
+        document.getElementById('assetsRows').innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading assets</td></tr>';
+      }
+    }
+
+    async function loadMaintenance() {
+      try {
+        document.getElementById('maintenanceRows').innerHTML = '<tr><td colspan="7" class="text-center"><div class="spinner-border spinner-border-sm me-2"></div>Loading maintenance...</td></tr>';
+        
+        const params = new URLSearchParams({
+          page: maintenancePage,
+          limit: 10,
+          ...maintenanceFilters
+        });
+        
+        const response = await Api.get(`api/alms_maintenance.php?${params}`);
+        const maintenance = response.data.maintenance || [];
+        const pagination = response.data.pagination || {};
+        
+        if (maintenance.length === 0) {
+          document.getElementById('maintenanceRows').innerHTML = '<tr><td colspan="7" class="text-center text-muted">No maintenance scheduled</td></tr>';
+          return;
+        }
+        
+        document.getElementById('maintenanceRows').innerHTML = maintenance.map(m => `
+          <tr>
+            <td>${m.asset_code} - ${m.asset_name}</td>
+            <td><span class="badge bg-info">${m.maintenance_type}</span></td>
+            <td>${m.title}</td>
+            <td>${new Date(m.scheduled_date).toLocaleDateString()}</td>
+            <td><span class="badge bg-${m.priority === 'high' ? 'danger' : m.priority === 'medium' ? 'warning' : 'success'}">${m.priority}</span></td>
+            <td><span class="badge bg-${m.status === 'completed' ? 'success' : m.status === 'overdue' ? 'danger' : 'warning'}">${m.status}</span></td>
+            <td>
+              <div class="btn-group btn-group-sm">
+                ${m.status !== 'completed' ? `
+                  <button class="btn btn-outline-success" data-complete="${m.id}" title="Complete">
+                    <i class="fas fa-check"></i>
+                  </button>
+                  <button class="btn btn-outline-warning" data-reschedule="${m.id}" title="Reschedule">
+                    <i class="fas fa-calendar"></i>
+                  </button>
+                ` : `
+                  <span class="text-success"><i class="fas fa-check-circle"></i> Completed</span>
+                `}
+              </div>
+            </td>
+          </tr>
+        `).join('');
+        
+        document.getElementById('maintenanceMeta').textContent = `Page ${pagination.page} of ${pagination.pages} (${pagination.total} total)`;
+        
+      } catch (error) {
+        console.error('Error loading maintenance:', error);
+        document.getElementById('maintenanceRows').innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading maintenance</td></tr>';
+      }
+    }
+
+    // Initialize with loading animation
+    Swal.fire({
+      title: 'Loading ALMS...',
+      text: 'Initializing Asset Lifecycle Management System',
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      }
+    });
+
+    // Load data and close loading
+    Promise.all([loadAssets(), loadMaintenance()])
+      .then(() => {
+        Swal.close();
+      })
+      .catch(() => {
+        Swal.fire('Error', 'Failed to initialize ALMS', 'error');
+      });
   </script>
 </body>
 </html>

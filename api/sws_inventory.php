@@ -5,6 +5,7 @@
  */
 
 require_once __DIR__ . '/common.php';
+require_once __DIR__ . '/warehouse_init.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 $conn = db_conn();
@@ -16,6 +17,9 @@ try {
         $product_id = isset($_GET['product_id']) ? (int)$_GET['product_id'] : null;
         $bin_id = isset($_GET['bin_id']) ? (int)$_GET['bin_id'] : null;
         $low_stock = isset($_GET['low_stock']) ? (bool)$_GET['low_stock'] : false;
+        
+        // Auto-sync inventory with locations before displaying
+        syncInventoryWithLocations($conn, $product_id, $warehouse_id);
         
         $where = ['p.is_active = 1'];
         $params = [];
@@ -122,6 +126,25 @@ try {
             // Get reserved for sales orders (simplified - set to 0 for now)
             $item['reserved_for_sales'] = 0;
             
+            // Get delivered shipment count for this product
+            try {
+                $stmt = $conn->prepare("
+                    SELECT COUNT(DISTINCT s.id) as shipment_count
+                    FROM shipments s
+                    JOIN shipment_items si ON s.id = si.shipment_id
+                    WHERE si.product_id = :product_id 
+                        AND s.status = 'delivered'
+                        AND s.warehouse_id = :warehouse_id
+                ");
+                $stmt->execute([
+                    ':product_id' => $item['product_id'],
+                    ':warehouse_id' => $item['warehouse_id']
+                ]);
+                $item['delivered_shipments'] = (int)$stmt->fetchColumn();
+            } catch (Exception $e) {
+                $item['delivered_shipments'] = 0;
+            }
+            
             // Stock status
             if ($item['quantity'] <= 0) {
                 $item['stock_status'] = 'out_of_stock';
@@ -167,8 +190,9 @@ try {
                 ':quantity' => $quantity
             ]);
             
-            // If bin_id provided, update inventory_locations
+            // Auto-assign to location (use provided bin_id or auto-select)
             if ($bin_id) {
+                // Use provided bin
                 $stmt = $conn->prepare("
                     INSERT INTO inventory_locations 
                     (product_id, warehouse_id, bin_id, quantity, batch_number, expiry_date, last_moved_at)
@@ -196,6 +220,9 @@ try {
                     ':quantity' => $quantity,
                     ':bin_id' => $bin_id
                 ]);
+            } else {
+                // Auto-assign to best available location
+                autoAssignToLocation($conn, $product_id, $warehouse_id, $quantity);
             }
             
             // Log transaction

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/common.php';
+require_once __DIR__ . '/warehouse_init.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 $conn = db_conn();
@@ -235,7 +236,7 @@ try {
                         
                         // Get product info from supplier_products_catalog
                         $spStmt = $conn->prepare("
-                            SELECT product_name, product_code, unit_price, weight_kg, dimensions_cm, barcode, category
+                            SELECT product_name, product_code, unit_price, barcode, category, description
                             FROM supplier_products_catalog 
                             WHERE id = :id
                         ");
@@ -272,17 +273,15 @@ try {
                             // Create new product
                             $productStmt = $conn->prepare("
                                 INSERT INTO products 
-                                (sku, name, description, unit_price, weight_kg, dimensions_cm, barcode, is_active, created_at, updated_at)
+                                (sku, name, description, unit_price, barcode, is_active, created_at, updated_at)
                                 VALUES 
-                                (:sku, :name, :description, :unit_price, :weight_kg, :dimensions_cm, :barcode, 1, NOW(), NOW())
+                                (:sku, :name, :description, :unit_price, :barcode, 1, NOW(), NOW())
                             ");
                             $productStmt->execute([
                                 ':sku' => $sku,
                                 ':name' => $supplierProduct['product_name'],
-                                ':description' => "Created from PO #{$poNumber}" . ($supplierProduct['category'] ? " - Category: " . $supplierProduct['category'] : ''),
+                                ':description' => ($supplierProduct['description'] ?: "Created from PO #{$poNumber}") . ($supplierProduct['category'] ? " - Category: " . $supplierProduct['category'] : ''),
                                 ':unit_price' => $supplierProduct['unit_price'] ?: $it['unit_price'],
-                                ':weight_kg' => $supplierProduct['weight_kg'],
-                                ':dimensions_cm' => $supplierProduct['dimensions_cm'],
                                 ':barcode' => $supplierProduct['barcode']
                             ]);
                             $productId = (int)$conn->lastInsertId();
@@ -424,19 +423,16 @@ try {
                                 ]);
                             }
                         }
-                        // Adjust inventory and log
-                        $stmt = $conn->prepare("SELECT id, quantity FROM inventory WHERE product_id = :pid AND warehouse_id = :wid FOR UPDATE");
-                        $stmt->execute([':pid'=>$row['product_id'],':wid'=>$row['warehouse_id']]);
-                        $inv = $stmt->fetch(PDO::FETCH_ASSOC);
-                        if ($inv) {
-                            $stmt = $conn->prepare("UPDATE inventory SET quantity = quantity + :q, last_restocked_at = NOW(), updated_at = NOW() WHERE id = :id");
-                            $stmt->execute([':q'=>$qty, ':id'=>$inv['id']]);
-                        } else {
-                            $stmt = $conn->prepare("INSERT INTO inventory (product_id, warehouse_id, quantity, reserved_quantity, last_restocked_at) VALUES (:pid,:wid,:q,0,NOW())");
-                            $stmt->execute([':pid'=>$row['product_id'],':wid'=>$row['warehouse_id'],':q'=>$qty]);
-                        }
-                        $log = $conn->prepare("INSERT INTO inventory_transactions (product_id, warehouse_id, transaction_type, quantity, reference_type, reference_id, notes, performed_by) VALUES (:pid,:wid,'receipt',:q,'purchase_order',:po_id,'PO receipt',:uid)");
-                        $log->execute([':pid'=>$row['product_id'],':wid'=>$row['warehouse_id'],':q'=>$qty, ':po_id'=>$id, ':uid'=>(int)$r['performed_by']]);
+                        // Add to inventory
+                        $stmt = $conn->prepare("INSERT INTO inventory (product_id, warehouse_id, quantity, last_restocked_at) VALUES (:product_id, :warehouse_id, :quantity, NOW()) ON DUPLICATE KEY UPDATE quantity = quantity + :quantity, last_restocked_at = NOW()");
+                        $stmt->execute([
+                            ':product_id' => $row['product_id'],
+                            ':warehouse_id' => $row['warehouse_id'],
+                            ':quantity' => $qty
+                        ]);
+                        
+                        // Auto-assign to location using warehouse init functions
+                        autoAssignToLocation($conn, $row['product_id'], $row['warehouse_id'], $qty);
                     }
                 }
                 // Update PO status heuristically

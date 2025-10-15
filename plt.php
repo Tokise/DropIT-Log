@@ -7,6 +7,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
 </head>
 <body>
   <main class="container-fluid py-3">
@@ -30,6 +31,7 @@
                   <option value="delivered">Delivered</option>
                   <option value="failed">Failed</option>
                   <option value="returned">Returned</option>
+                  <option value="cancelled">Cancelled</option>
                 </select>
                 <input id="search" class="form-control form-control-sm" style="width:160px" placeholder="Search tracking #"/>
                 <button id="filterBtn" class="btn btn-outline-primary btn-sm">Apply</button>
@@ -73,7 +75,7 @@
           const statusColor = {
             'pending': 'secondary', 'picked': 'info', 'packed': 'warning', 
             'in_transit': 'primary', 'out_for_delivery': 'warning', 
-            'delivered': 'success', 'failed': 'danger', 'returned': 'dark'
+            'delivered': 'success', 'failed': 'danger', 'returned': 'dark', 'cancelled': 'danger'
           }[s.status] || 'secondary';
           
           const priorityColor = {
@@ -131,9 +133,9 @@
           </div>`
         ).join('');
         
-        const statusOptions = ['pending', 'picked', 'packed', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'returned'];
+        const statusOptions = ['pending', 'picked', 'packed', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'returned', 'cancelled'];
         const statusSelect = statusOptions.map(status => 
-          `<option value="${status}" ${status === data.status ? 'selected' : ''}>${status.replace('_', ' ').toUpperCase()}</option>`
+          `<option value="${status}" ${status === data.status ? 'selected' : ''}>${status.replace(/_/g, ' ').toUpperCase()}</option>`
         ).join('');
         
         await Swal.fire({
@@ -443,20 +445,46 @@
     }
     
     function openBarcodeScanner() {
-      // Check if barcode scanner HTML file exists, otherwise show manual input
       Swal.fire({
         title: 'Scan Barcode',
         html: `
           <div class="text-start">
             <div class="mb-3">
-              <label class="form-label">Enter Barcode/Tracking Number</label>
-              <input id="barcode-input" class="form-control" placeholder="Scan or type barcode..." autofocus>
+              <div class="d-flex gap-2 mb-2">
+                <button id="camera-btn" class="btn btn-primary btn-sm flex-fill">
+                  <i class="fa-solid fa-camera me-1"></i> Use Camera
+                </button>
+                <button id="manual-btn" class="btn btn-outline-secondary btn-sm flex-fill">
+                  <i class="fa-solid fa-keyboard me-1"></i> Type Manually
+                </button>
+              </div>
             </div>
-            <div class="text-center">
-              <small class="text-muted">
-                <i class="fa-solid fa-qrcode me-1"></i>
-                Position barcode in front of camera or type manually
-              </small>
+            
+            <!-- Camera Scanner -->
+            <div id="camera-scanner" style="display: none;">
+              <div class="mb-3">
+                <video id="barcode-video" width="100%" height="200" style="border: 2px solid #ddd; border-radius: 8px;"></video>
+              </div>
+              <div class="text-center mb-3">
+                <small class="text-muted">
+                  <i class="fa-solid fa-qrcode me-1"></i>
+                  Position barcode in front of camera
+                </small>
+              </div>
+            </div>
+            
+            <!-- Manual Input -->
+            <div id="manual-input">
+              <div class="mb-3">
+                <label class="form-label">Enter Barcode/Tracking Number</label>
+                <input id="barcode-input" class="form-control" placeholder="Type or paste barcode..." autofocus>
+              </div>
+              <div class="text-center">
+                <small class="text-muted">
+                  <i class="fa-solid fa-keyboard me-1"></i>
+                  Type the barcode manually
+                </small>
+              </div>
             </div>
           </div>
         `,
@@ -472,14 +500,102 @@
           return barcode;
         },
         didOpen: () => {
-          // Focus on input and select all text
+          let stream = null;
+          let codeReader = null;
+          
+          const cameraBtn = document.getElementById('camera-btn');
+          const manualBtn = document.getElementById('manual-btn');
+          const cameraScanner = document.getElementById('camera-scanner');
+          const manualInput = document.getElementById('manual-input');
+          const video = document.getElementById('barcode-video');
           const input = document.getElementById('barcode-input');
+          
+          // Switch to camera mode
+          cameraBtn.addEventListener('click', async () => {
+            cameraBtn.classList.add('btn-primary');
+            cameraBtn.classList.remove('btn-outline-primary');
+            manualBtn.classList.add('btn-outline-secondary');
+            manualBtn.classList.remove('btn-secondary');
+            
+            cameraScanner.style.display = 'block';
+            manualInput.style.display = 'none';
+            
+            try {
+              // Check if ZXing library is available
+              if (typeof ZXing !== 'undefined') {
+                codeReader = new ZXing.BrowserMultiFormatReader();
+                
+                const devices = await codeReader.listVideoInputDevices();
+                if (devices.length > 0) {
+                  const selectedDeviceId = devices[0].deviceId;
+                  
+                  codeReader.decodeFromVideoDevice(selectedDeviceId, video, (result, err) => {
+                    if (result) {
+                      input.value = result.text;
+                      Swal.clickConfirm();
+                    }
+                  });
+                } else {
+                  throw new Error('No camera devices found');
+                }
+              } else {
+                // Fallback to basic camera access
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                  video: { facingMode: 'environment' } 
+                });
+                video.srcObject = stream;
+                video.play();
+                
+                Swal.showValidationMessage('Camera started. Please use manual input or install barcode scanner library.');
+              }
+            } catch (error) {
+              console.error('Camera error:', error);
+              Swal.showValidationMessage('Camera not available. Please use manual input.');
+              // Switch back to manual
+              manualBtn.click();
+            }
+          });
+          
+          // Switch to manual mode
+          manualBtn.addEventListener('click', () => {
+            manualBtn.classList.add('btn-secondary');
+            manualBtn.classList.remove('btn-outline-secondary');
+            cameraBtn.classList.add('btn-outline-primary');
+            cameraBtn.classList.remove('btn-primary');
+            
+            cameraScanner.style.display = 'none';
+            manualInput.style.display = 'block';
+            
+            // Stop camera
+            if (stream) {
+              stream.getTracks().forEach(track => track.stop());
+              stream = null;
+            }
+            if (codeReader) {
+              codeReader.reset();
+              codeReader = null;
+            }
+            
+            input.focus();
+          });
+          
+          // Default to manual input
           input.focus();
           
           // Listen for Enter key
           input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
               Swal.clickConfirm();
+            }
+          });
+          
+          // Cleanup on close
+          Swal.getCloseButton().addEventListener('click', () => {
+            if (stream) {
+              stream.getTracks().forEach(track => track.stop());
+            }
+            if (codeReader) {
+              codeReader.reset();
             }
           });
         }
